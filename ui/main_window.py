@@ -13,13 +13,14 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QStatusBar,
 )
 
@@ -29,10 +30,22 @@ from core.annotations import (
     AddImageCommand,
     AddShapeCommand,
     AddTextBoxCommand,
+    ModifyTextBoxCommand,
+    RedactCommand,
+    RemoveFreehandCommand,
+    RemoveHighlightCommand,
+    RemoveImageCommand,
+    RemoveShapeCommand,
     RemoveTextBoxCommand,
 )
 from core.bangla_input import BanglaPhoneticEngine
-from core.page_tools import DeletePageCommand, PageTools, RotatePageCommand
+from core.page_tools import (
+    DeletePageCommand,
+    InsertBlankPageCommand,
+    PageTools,
+    ReorderPagesCommand,
+    RotatePageCommand,
+)
 from core.pdf_engine import PdfEngine
 from core.undo_redo import UndoStack
 from ui.dialogs import AboutDialog, ExportImageDialog, MergeDialog, SplitDialog
@@ -97,6 +110,7 @@ class MainWindow(QMainWindow):
         self._engine.create_new()
         self._view.load_document(self._engine)
         self._thumb_panel.refresh(self._engine)
+        self._update_undo_redo_ui()
 
         # Apply Light Theme by default
         ThemeManager.apply_theme(QApplication.instance(), dark=False)
@@ -144,14 +158,30 @@ class MainWindow(QMainWindow):
         # --- Edit Menu ---
         self._menu_edit = mb.addMenu(self._i18n.t("menu_edit"))
         self._act_undo = self._menu_edit.addAction(self._i18n.t("undo"), self.action_undo, QKeySequence.StandardKey.Undo)
+        self._act_undo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.addAction(self._act_undo)
+
         self._act_redo = self._menu_edit.addAction(self._i18n.t("redo"), self.action_redo, QKeySequence.StandardKey.Redo)
+        self._act_redo.setShortcuts([QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")])
+        self._act_redo.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.addAction(self._act_redo)
+
         self._act_del = self._menu_edit.addAction(self._i18n.t("action_delete"), self._view.delete_selected, QKeySequence.StandardKey.Delete)
+        self._act_del.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.addAction(self._act_del)
 
         # --- View Menu ---
         self._menu_view = mb.addMenu(self._i18n.t("menu_view"))
+        self._act_actual_size = self._menu_view.addAction(self._i18n.t("zoom_actual_size"), self._view.zoom_actual_size, QKeySequence("Ctrl+1"))
+        self._act_zoom_fit = self._menu_view.addAction(self._i18n.t("zoom_fit_width"), self._view.zoom_fit_width, QKeySequence("Ctrl+0"))
+        self._act_zoom_page = self._menu_view.addAction(self._i18n.t("zoom_fit_page"), self._view.zoom_fit_page, QKeySequence("Ctrl+2"))
+        self._act_zoom_height = self._menu_view.addAction(self._i18n.t("zoom_fit_height"), self._view.zoom_fit_height, QKeySequence("Ctrl+3"))
+        self._menu_view.addSeparator()
         self._act_zoom_in = self._menu_view.addAction(self._i18n.t("zoom_in"), self._view.zoom_in, QKeySequence.StandardKey.ZoomIn)
         self._act_zoom_out = self._menu_view.addAction(self._i18n.t("zoom_out"), self._view.zoom_out, QKeySequence.StandardKey.ZoomOut)
-        self._act_zoom_fit = self._menu_view.addAction(self._i18n.t("zoom_fit"), self._view.zoom_fit_width, QKeySequence("Ctrl+0"))
+        self._menu_view.addSeparator()
+        self._act_read_mode = self._menu_view.addAction(self._i18n.t("read_mode"), self.toggle_read_mode, QKeySequence("Ctrl+H"))
+        self._act_full_screen = self._menu_view.addAction(self._i18n.t("full_screen"), self.toggle_full_screen, QKeySequence("F11"))
         self._menu_view.addSeparator()
         self._act_theme_toggle = self._menu_view.addAction(self._i18n.t("theme_dark"), self.toggle_theme)
 
@@ -186,6 +216,9 @@ class MainWindow(QMainWindow):
         self._toolbar.delete_requested.connect(self._view.delete_selected)
         self._toolbar.zoom_in_requested.connect(self._view.zoom_in)
         self._toolbar.zoom_out_requested.connect(self._view.zoom_out)
+        self._toolbar.zoom_fit_requested.connect(self._view.zoom_fit_width)
+        self._toolbar.zoom_page_requested.connect(self._view.zoom_fit_page)
+        self._toolbar.read_mode_requested.connect(self.toggle_read_mode)
         self._toolbar.bangla_toggled.connect(self._on_bangla_toggled)
         self._toolbar.tool_selected.connect(self._on_tool_selected)
         self._view.tool_switched.connect(self._toolbar.set_current_tool)
@@ -313,15 +346,26 @@ class MainWindow(QMainWindow):
 
     def _on_annotation_deleted(self, ann_id: str) -> None:
         mgr = self._engine.annotation_manager
-        # Check text box
         tb = mgr.get_text_box(ann_id)
         if tb:
             self._undo_stack.push(RemoveTextBoxCommand(mgr, tb))
-        else:
-            mgr.remove_highlight(ann_id)
-            mgr.remove_shape(ann_id)
-            mgr.remove_freehand(ann_id)
-            mgr.remove_image(ann_id)
+            return
+        hl = mgr.get_highlight(ann_id)
+        if hl:
+            self._undo_stack.push(RemoveHighlightCommand(mgr, hl))
+            return
+        sh = mgr.get_shape(ann_id)
+        if sh:
+            self._undo_stack.push(RemoveShapeCommand(mgr, sh))
+            return
+        fh = mgr.get_freehand(ann_id)
+        if fh:
+            self._undo_stack.push(RemoveFreehandCommand(mgr, fh))
+            return
+        im = mgr.get_image(ann_id)
+        if im:
+            self._undo_stack.push(RemoveImageCommand(mgr, im))
+            return
 
     # ================================================================== #
     #  Page Operations
@@ -345,7 +389,7 @@ class MainWindow(QMainWindow):
             cmd = DeletePageCommand(self._engine.document, page_index)
             self._undo_stack.push(cmd)
             self._mark_modified()
-            self._view.load_document(self._engine)
+            self._view.load_document(self._engine, preserve_view=True)
             self._thumb_panel.refresh(self._engine)
 
     def action_rotate_page(self) -> None:
@@ -363,15 +407,17 @@ class MainWindow(QMainWindow):
 
     def _on_page_insert_index(self, after_index: int) -> None:
         target_idx = after_index + 1
-        PageTools.insert_blank_page(self._engine.document, target_idx)
+        cmd = InsertBlankPageCommand(self._engine.document, target_idx)
+        self._undo_stack.push(cmd)
         self._mark_modified()
-        self._view.load_document(self._engine)
+        self._view.load_document(self._engine, preserve_view=True)
         self._thumb_panel.refresh(self._engine)
 
     def _on_pages_reordered(self, new_order: list[int]) -> None:
-        PageTools.reorder_pages(self._engine.document, new_order)
+        cmd = ReorderPagesCommand(self._engine.document, new_order)
+        self._undo_stack.push(cmd)
         self._mark_modified()
-        self._view.load_document(self._engine)
+        self._view.load_document(self._engine, preserve_view=True)
         self._thumb_panel.refresh(self._engine)
 
     # ================================================================== #
@@ -486,14 +532,83 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def action_undo(self) -> None:
-        self._undo_stack.undo()
-        self._view.load_document(self._engine)
-        self._thumb_panel.refresh(self._engine)
+        if self._undo_stack.can_undo:
+            self._undo_stack.undo()
+            self._view.load_document(self._engine, preserve_view=True)
+            self._thumb_panel.refresh(self._engine)
+            self._status_bar.showMessage("Undone", 2000)
 
     def action_redo(self) -> None:
-        self._undo_stack.redo()
-        self._view.load_document(self._engine)
-        self._thumb_panel.refresh(self._engine)
+        if self._undo_stack.can_redo:
+            self._undo_stack.redo()
+            self._view.load_document(self._engine, preserve_view=True)
+            self._thumb_panel.refresh(self._engine)
+            self._status_bar.showMessage("Redone", 2000)
+
+    # ================================================================== #
+    #  View Modes: Read Mode & Full Screen
+    # ================================================================== #
+
+    def toggle_read_mode(self) -> None:
+        """Toggle distraction-free Read Mode hiding toolbars and sidebars."""
+        self._is_read_mode = not getattr(self, "_is_read_mode", False)
+        if self._is_read_mode:
+            self._saved_thumb_visible = self._thumb_panel.isVisible()
+            self._saved_prop_visible = self._prop_panel.isVisible()
+            self._toolbar.setVisible(False)
+            self._thumb_panel.setVisible(False)
+            self._prop_panel.setVisible(False)
+            self._status_bar.setVisible(False)
+            self.menuBar().setVisible(False)
+
+            if not hasattr(self, "_exit_read_btn"):
+                self._exit_read_btn = QPushButton("✕ " + self._i18n.t("exit_read_mode") + " (Esc)", self)
+                self._exit_read_btn.setStyleSheet(
+                    "QPushButton { background: rgba(15, 23, 42, 0.9); color: white; border: 1.5px solid rgba(255,255,255,0.4); border-radius: 18px; padding: 7px 18px; font-weight: 700; font-size: 12px; }"
+                    "QPushButton:hover { background: #0284c7; border-color: #38bdf8; }"
+                )
+                self._exit_read_btn.clicked.connect(self.toggle_read_mode)
+            self._position_exit_read_btn()
+            self._exit_read_btn.show()
+            self._exit_read_btn.raise_()
+            self._view.zoom_fit_width()
+        else:
+            self._toolbar.setVisible(True)
+            self._thumb_panel.setVisible(getattr(self, "_saved_thumb_visible", True))
+            self._prop_panel.setVisible(getattr(self, "_saved_prop_visible", True))
+            self._status_bar.setVisible(True)
+            self.menuBar().setVisible(True)
+            if hasattr(self, "_exit_read_btn"):
+                self._exit_read_btn.hide()
+            self._view.zoom_fit_width()
+
+    def _position_exit_read_btn(self) -> None:
+        if hasattr(self, "_exit_read_btn") and self._exit_read_btn.isVisible():
+            self._exit_read_btn.adjustSize()
+            self._exit_read_btn.move(self.width() - self._exit_read_btn.width() - 25, 20)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_exit_read_btn()
+
+    def toggle_full_screen(self) -> None:
+        """Toggle Full Screen display."""
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Window-level key shortcuts."""
+        if event.key() == Qt.Key.Key_Escape and getattr(self, "_is_read_mode", False):
+            self.toggle_read_mode()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_F11:
+            self.toggle_full_screen()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ================================================================== #
     #  Themes & Translations
@@ -526,9 +641,14 @@ class MainWindow(QMainWindow):
         self._act_del.setText(self._i18n.t("action_delete"))
 
         self._menu_view.setTitle(self._i18n.t("menu_view"))
+        self._act_actual_size.setText(self._i18n.t("zoom_actual_size"))
+        self._act_zoom_fit.setText(self._i18n.t("zoom_fit_width"))
+        self._act_zoom_page.setText(self._i18n.t("zoom_fit_page"))
+        self._act_zoom_height.setText(self._i18n.t("zoom_fit_height"))
         self._act_zoom_in.setText(self._i18n.t("zoom_in"))
         self._act_zoom_out.setText(self._i18n.t("zoom_out"))
-        self._act_zoom_fit.setText(self._i18n.t("zoom_fit"))
+        self._act_read_mode.setText(self._i18n.t("read_mode"))
+        self._act_full_screen.setText(self._i18n.t("full_screen"))
         theme_text = self._i18n.t("theme_light") if self._is_dark_theme else self._i18n.t("theme_dark")
         self._act_theme_toggle.setText(theme_text)
 

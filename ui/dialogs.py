@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -486,7 +487,7 @@ class AboutDialog(QDialog):
 # ====================================================================== #
 
 class MultiLineTextDialog(QDialog):
-    """Modern multi-line text input dialog with Enter for newline and Bangla phonetic support."""
+    """Modern multi-line text input dialog with Enter for newline, live original text, and Bangla phonetic preview."""
 
     def __init__(
         self,
@@ -498,30 +499,67 @@ class MultiLineTextDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(440, 240)
+        self.resize(500, 260)
         self._bangla_engine = bangla_engine
         self._i18n = i18n
+
+        # Explicitly disable global Bangla event filter on this dialog and all its children
+        self.setProperty("no_bangla_filter", True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
         prompt = i18n.t("tool_text") if i18n else "Text"
+        self._prompt = prompt
         self._label = QLabel(f"{prompt}:")
         self._label.setStyleSheet("font-weight: 600; font-size: 13px;")
         layout.addWidget(self._label)
 
         self.text_edit = QPlainTextEdit()
+        # Mark both the text edit and its viewport to bypass eventFilter buffering
+        self.text_edit.setProperty("no_bangla_filter", True)
+        if self.text_edit.viewport():
+            self.text_edit.viewport().setProperty("no_bangla_filter", True)
         self.text_edit.setPlainText(initial_text)
         self.text_edit.setPlaceholderText("Type your text here... (Press Enter for a new line)")
-        self.text_edit.setStyleSheet("font-size: 13px; padding: 6px;")
+        self.text_edit.setStyleSheet(
+            "QPlainTextEdit { font-size: 14px; padding: 8px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #ffffff; color: #0f172a; }"
+            "QPlainTextEdit:focus { border: 1.5px solid #0284c7; }"
+        )
         layout.addWidget(self.text_edit, 1)
+
+        # Bangla live preview card (shows transliterated Bangla text ONLY when phonetic is enabled)
+        self.preview_card = QFrame()
+        self.preview_card.setObjectName("BanglaPreviewCard")
+        self.preview_card.setProperty("no_bangla_filter", True)
+        self.preview_card.setStyleSheet(
+            "#BanglaPreviewCard { background: #f8fafc; border: 1px solid #0284c7; border-radius: 6px; padding: 8px; }"
+        )
+        preview_vbox = QVBoxLayout(self.preview_card)
+        preview_vbox.setContentsMargins(10, 8, 10, 8)
+        preview_vbox.setSpacing(4)
+
+        prev_header = QLabel("লাইভ বাংলা রূপান্তর (Live Bangla Transliteration):")
+        prev_header.setStyleSheet("color: #0284c7; font-weight: 700; font-size: 12px;")
+        preview_vbox.addWidget(prev_header)
+
+        self.preview_label = QLabel()
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.preview_label.setStyleSheet("font-family: 'Noto Sans Bengali', sans-serif; font-size: 15px; color: #0f172a; padding: 2px 0;")
+        preview_vbox.addWidget(self.preview_label)
+
+        self.preview_card.setVisible(False)
+        layout.addWidget(self.preview_card)
 
         # Bottom row with Bangla toggle if available and shortcut hint
         bottom_row = QHBoxLayout()
         if self._bangla_engine:
             self._bangla_cb = QCheckBox("Bangla Phonetic (Avro)")
-            self._bangla_cb.setChecked(self._bangla_engine.is_active)
+            # Default to unchecked so normal typing is never intercepted or converted unexpectedly
+            self._bangla_cb.setChecked(False)
+            self._bangla_cb.toggled.connect(self._on_bangla_toggled)
             bottom_row.addWidget(self._bangla_cb)
         else:
             self._bangla_cb = None
@@ -550,6 +588,38 @@ class MultiLineTextDialog(QDialog):
         btn_layout.addWidget(self.btn_ok)
 
         layout.addLayout(btn_layout)
+
+        # Connect text changed to update preview live
+        self.text_edit.textChanged.connect(self._update_preview)
+        self._update_preview()
+
+        # Set initial focus directly into text editor
+        self.text_edit.setFocus()
+        if initial_text:
+            self.text_edit.selectAll()
+
+    def _on_bangla_toggled(self, checked: bool) -> None:
+        self.preview_card.setVisible(checked)
+        if checked:
+            self._label.setText("Original Phonetic Text (ইংরেজি বর্ণে টাইপ করুন - যেমন: amra shobai raja):")
+        else:
+            self._label.setText(f"{self._prompt}:")
+        self._update_preview()
+        self.adjustSize()
+
+    def _update_preview(self) -> None:
+        is_bangla = bool(self._bangla_cb and self._bangla_cb.isChecked() and self._bangla_engine)
+        self.preview_card.setVisible(is_bangla)
+        if is_bangla:
+            self._label.setText("Original Phonetic Text (ইংরেজি বর্ণে টাইপ করুন - যেমন: amra shobai raja):")
+            raw_text = self.text_edit.toPlainText()
+            if raw_text.strip():
+                converted = self._bangla_engine.transliterate(raw_text)
+                self.preview_label.setText(converted)
+            else:
+                self.preview_label.setText("(টাইপ করুন বাংলা দেখতে...)")
+        else:
+            self._label.setText(f"{self._prompt}:")
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):

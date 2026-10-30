@@ -13,9 +13,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, Signal
+from PySide6.QtGui import QCursor, QKeyEvent
+from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 logger = logging.getLogger(__name__)
 
@@ -250,9 +250,14 @@ class BanglaPhoneticEngine(QObject):
             "durga": "দুর্গা",
             "koushal": "কৌশল",
             "amar": "আমার",
+            "amra": "আমরা",
+            "shobai": "সবাই",
+            "raja": "রাজা",
             "sonar": "সোনার",
             "bangla": "বাংলা",
             "ami": "আমি",
+            "tumi": "তুমি",
+            "apni": "আপনি",
             "tomay": "তোমায়",
             "bhalobashi": "ভালোবাসি",
             "dhaka": "ঢাকা",
@@ -396,6 +401,13 @@ class BanglaPhoneticEngine(QObject):
         """Intercept key presses in text widgets when Bangla mode is active."""
         if not self._active:
             return super().eventFilter(watched, event)
+
+        # Allow widgets marked with no_bangla_filter (like MultiLineTextDialog) to receive keys directly
+        curr: Optional[QObject] = watched
+        while curr is not None:
+            if getattr(curr, "property", None) and curr.property("no_bangla_filter"):
+                return False
+            curr = curr.parent() if hasattr(curr, "parent") else None
 
         if event.type() != QEvent.Type.KeyPress:
             return super().eventFilter(watched, event)

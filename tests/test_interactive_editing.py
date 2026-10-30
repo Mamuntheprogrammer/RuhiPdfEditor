@@ -184,7 +184,10 @@ class TestInteractiveEditing(unittest.TestCase):
             self.assertEqual(pm.width(), 24)
             self.assertEqual(pm.height(), 24)
 
-        extra_icons = ["bold.svg", "bold-white.svg", "italic.svg", "italic-white.svg", "palette.svg"]
+        extra_icons = [
+            "bold.svg", "bold-white.svg", "italic.svg", "italic-white.svg", "palette.svg",
+            "zoom-fit.svg", "zoom-page.svg", "read-mode.svg",
+        ]
         for extra in extra_icons:
             icon = get_icon(extra)
             self.assertFalse(icon.isNull(), f"Icon {extra} is null")
@@ -273,6 +276,14 @@ class TestInteractiveEditing(unittest.TestCase):
         # Mocking successful save sets _is_modified to False
         win._is_modified = False
         self.assertFalse(win._is_modified)
+        # Test keyPressEvent on PdfView directly for Ctrl+Z and Ctrl+Y
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        undo_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        redo_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+        win._view.keyPressEvent(undo_ev)
+        win._view.keyPressEvent(redo_ev)
+
         win.close()
 
     def test_eraser_on_existing_text(self):
@@ -363,6 +374,158 @@ class TestInteractiveEditing(unittest.TestCase):
             self.assertNotIn("Initial text", txt2)
             self.assertIn("Second updated text", txt2)
             self.assertIn("Multi-line line 2", txt2)
+
+    def test_in_place_save_no_windows_permission_error(self):
+        """Verify saving over the original opened PDF file does not cause Windows PermissionError."""
+        import tempfile
+        import pymupdf
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path = Path(tmpdir) / "test_inplace.pdf"
+            # Create a simple valid PDF on disk
+            doc = pymupdf.open()
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((50, 50), "Original Content")
+            doc.save(str(file_path))
+            doc.close()
+
+            # Open with engine
+            eng = PdfEngine()
+            eng.open(str(file_path))
+
+            # Add an annotation
+            tb = TextBoxData(
+                id="inplace-tb",
+                page_index=0,
+                rect=(50, 100, 150, 40),
+                text="Edited Content",
+            )
+            eng.annotation_manager.add_text_box(tb)
+
+            # In-place save (must not raise Permission denied / FzErrorSystem)
+            eng.save()
+
+            # Verify content was updated on disk
+            doc_verify = pymupdf.open(str(file_path))
+            txt = doc_verify[0].get_text()
+            doc_verify.close()
+            eng.close()
+
+            self.assertIn("Original Content", txt)
+            self.assertIn("Edited Content", txt)
+
+    def test_open_document_fills_canvas_fit_width_default(self):
+        """Verify opening a document defaults to fit-to-width, with actual size, fit page and fit height support."""
+        self.view.load_document(self.engine)
+        # Default zoom mode is fit to width
+        self.assertGreater(self.view._zoom, 0.2)
+        self.assertTrue(self.view.alignment() & Qt.AlignmentFlag.AlignHCenter)
+        self.assertTrue(self.view.alignment() & Qt.AlignmentFlag.AlignTop)
+
+        # Actual size sets zoom to 1.0 (100%)
+        self.view.zoom_actual_size()
+        self.assertEqual(self.view._zoom, 1.0)
+
+        # Test fit to height and fit to page
+        self.view.zoom_fit_height()
+        self.assertGreater(self.view._zoom, 0.2)
+
+        self.view.zoom_fit_page()
+        self.assertGreater(self.view._zoom, 0.2)
+
+        # Check scene rect and page centering
+        page_item = self.view._page_items[0]
+        scene_w = self.view._scene.sceneRect().width()
+        expected_x = (scene_w - page_item.pt_width) / 2.0
+        self.assertAlmostEqual(page_item.pos().x(), expected_x, delta=0.5)
+
+    def test_bangla_phonetic_live_preview_and_original_text(self):
+        """Verify Bangla phonetic mode keeps original text live, defaults to normal typing, and previews only when checked."""
+        from core.bangla_input import BanglaPhoneticEngine
+        from ui.dialogs import MultiLineTextDialog
+        bangla_engine = BanglaPhoneticEngine()
+        bangla_engine.set_active(True)
+
+        dlg = MultiLineTextDialog(
+            parent=None,
+            title="Add Text",
+            initial_text="amra shobai",
+            bangla_engine=bangla_engine,
+            i18n=self.i18n,
+        )
+
+        # Widget must bypass eventFilter so original text is typed/displayed live
+        self.assertTrue(dlg.text_edit.property("no_bangla_filter"))
+        self.assertEqual(dlg.text_edit.toPlainText(), "amra shobai")
+
+        # By default, phonetic checkbox is unchecked to prevent unwanted live converted view
+        self.assertFalse(dlg._bangla_cb.isChecked())
+        self.assertTrue(dlg.preview_card.isHidden())
+        self.assertEqual(dlg.get_text(), "amra shobai")
+
+        # When user checks phonetic, preview card becomes visible with transliteration
+        dlg._bangla_cb.setChecked(True)
+        self.assertFalse(dlg.preview_card.isHidden())
+        self.assertEqual(dlg.preview_label.text(), "আমরা সবাই")
+        self.assertEqual(dlg.get_text(), "আমরা সবাই")
+
+        # Live typing updates: append " raja"
+        dlg.text_edit.setPlainText("amra shobai raja")
+        self.assertEqual(dlg.text_edit.toPlainText(), "amra shobai raja")
+        self.assertEqual(dlg.preview_label.text(), "আমরা সবাই রাজা")
+        self.assertEqual(dlg.get_text(), "আমরা সবাই রাজা")
+
+        # Toggle phonetic off -> original text returned and preview card hidden
+        dlg._bangla_cb.setChecked(False)
+        self.assertTrue(dlg.preview_card.isHidden())
+        self.assertEqual(dlg.get_text(), "amra shobai raja")
+
+    def test_undo_redo_and_read_mode(self):
+        """Verify undo/redo operations and read mode toggle."""
+        from ui.main_window import MainWindow
+        win = MainWindow()
+
+        # Add a text box
+        tb = TextBoxData(
+            id="undo-test",
+            page_index=0,
+            rect=(50, 50, 100, 30),
+            text="Testing Undo",
+        )
+        win._on_text_box_added(tb)
+        self.assertTrue(win._undo_stack.can_undo)
+        self.assertIn("undo-test", [b.id for b in win._engine.annotation_manager.text_boxes])
+
+        # Perform undo
+        win.action_undo()
+        self.assertNotIn("undo-test", [b.id for b in win._engine.annotation_manager.text_boxes])
+        self.assertTrue(win._undo_stack.can_redo)
+
+        # Perform redo
+        win.action_redo()
+        self.assertIn("undo-test", [b.id for b in win._engine.annotation_manager.text_boxes])
+
+        # Test Read Mode toggle
+        self.assertFalse(getattr(win, "_is_read_mode", False))
+        win.toggle_read_mode()
+        self.assertTrue(win._is_read_mode)
+        self.assertTrue(win._toolbar.isHidden())
+        self.assertTrue(win._thumb_panel.isHidden())
+
+        # Exit Read Mode
+        win.toggle_read_mode()
+        self.assertFalse(win._is_read_mode)
+        self.assertFalse(win._toolbar.isHidden())
+
+        # Test keyPressEvent on PdfView directly for Ctrl+Z and Ctrl+Y
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        undo_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        redo_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+        win._view.keyPressEvent(undo_ev)
+        win._view.keyPressEvent(redo_ev)
+
+        win.close()
 
     def tearDown(self):
         self.engine.close()

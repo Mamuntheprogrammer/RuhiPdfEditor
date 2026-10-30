@@ -103,6 +103,9 @@ class PdfEngine(QObject):
     def open(self, path: str) -> None:
         """Open a PDF file from *path*.
 
+        Loads the file bytes into memory to prevent OS file locks on Windows,
+        allowing direct in-place saves and edits without permission errors.
+
         Raises ``FileNotFoundError`` if the file does not exist, or
         ``RuntimeError`` if PyMuPDF cannot parse it.
         """
@@ -111,7 +114,9 @@ class PdfEngine(QObject):
             raise FileNotFoundError(f"File not found: {resolved}")
 
         try:
-            self._doc = fitz.open(str(resolved))
+            with open(resolved, "rb") as f:
+                file_bytes = f.read()
+            self._doc = fitz.open(stream=file_bytes, filetype="pdf")
         except Exception as exc:
             logger.exception("Failed to open '%s'", resolved)
             raise RuntimeError(f"Cannot open PDF: {exc}") from exc
@@ -160,9 +165,13 @@ class PdfEngine(QObject):
             export_doc = fitz.open(stream=doc_bytes, filetype="pdf")
             try:
                 self.apply_annotations(export_doc)
-                export_doc.save(str(target_path), garbage=4, deflate=True)
+                saved_bytes = export_doc.tobytes(garbage=4, deflate=True)
             finally:
                 export_doc.close()
+
+            # Write bytes directly using Python's open() to avoid Windows file-lock permission errors
+            with open(target_path, "wb") as f:
+                f.write(saved_bytes)
 
             self._file_path = str(target_path)
             logger.info("Saved with annotations burned into %s", target_path)

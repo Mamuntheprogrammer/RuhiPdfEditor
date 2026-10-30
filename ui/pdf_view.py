@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QFontMetrics,
     QImage,
     QKeyEvent,
+    QKeySequence,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -50,6 +51,7 @@ from core.annotations import (
     FreehandData,
     HighlightData,
     ImageData,
+    RedactCommand,
     RedactData,
     ShapeData,
     TextBoxData,
@@ -91,7 +93,7 @@ class PdfPageItem(QGraphicsItem):
         self.setZValue(0.0)
 
     def boundingRect(self) -> QRectF:
-        return QRectF(0, 0, self.pt_width, self.pt_height)
+        return QRectF(0, 0, self.pt_width + 8, self.pt_height + 8)
 
     def set_rendered_pixmap(self, pixmap: QPixmap, rendered_zoom: float = 1.0) -> None:
         self._pixmap = pixmap
@@ -99,19 +101,25 @@ class PdfPageItem(QGraphicsItem):
         self.update()
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        rect = self.boundingRect()
+        page_rect = QRectF(0, 0, self.pt_width, self.pt_height)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
+        # Drop shadow for clean modern paper elevation
+        shadow_rect = page_rect.translated(3, 4)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 30)))
+        painter.drawRoundedRect(shadow_rect, 2, 2)
+
         # White page background with subtle border
         painter.setPen(QPen(QColor(180, 180, 180), 1))
         painter.setBrush(QBrush(Qt.GlobalColor.white))
-        painter.drawRect(rect)
+        painter.drawRect(page_rect)
 
         # Draw the high-resolution vector rendered pixmap with floating point mapping
         if self._pixmap is not None and not self._pixmap.isNull():
-            painter.drawPixmap(rect, self._pixmap, QRectF(self._pixmap.rect()))
+            painter.drawPixmap(page_rect, self._pixmap, QRectF(self._pixmap.rect()))
 
         painter.restore()
 
@@ -610,7 +618,8 @@ class PdfView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setBackgroundBrush(QBrush(QColor("#2d2d30")))
+        self.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.setBackgroundBrush(Qt.BrushStyle.NoBrush)
 
     def set_dependencies(self, engine: PdfEngine, bangla: BanglaPhoneticEngine, i18n: I18n) -> None:
         self._engine = engine
@@ -672,7 +681,7 @@ class PdfView(QGraphicsView):
     #  Document Loading & Rendering (Vector Sharpness Guaranteed)
     # ================================================================== #
 
-    def load_document(self, engine: PdfEngine) -> None:
+    def load_document(self, engine: PdfEngine, preserve_view: bool = False) -> None:
         self._engine = engine
         self._scene.clear()
         self._page_items.clear()
@@ -682,14 +691,21 @@ class PdfView(QGraphicsView):
         if not engine or engine.page_count == 0:
             return
 
+        saved_zoom = self._zoom if preserve_view else None
+
         # Supersampled high-DPI rendering so vector text and graphics are razor sharp
-        render_scale = max(2.5, self._zoom * 2.5)
+        render_scale = max(2.5, (saved_zoom or 1.0) * 2.5)
+
+        # Calculate max page width to center all pages horizontally along canvas
+        max_pt_w = max(engine.get_page_size(i)[0] for i in range(engine.page_count))
+        scene_w = max_pt_w + 2 * self.PAGE_SPACING
         y_offset = self.PAGE_SPACING
 
         for i in range(engine.page_count):
             pt_w, pt_h = engine.get_page_size(i)
             page_item = PdfPageItem(i, pt_w, pt_h)
-            page_item.setPos(self.PAGE_SPACING, y_offset)
+            page_x = (scene_w - pt_w) / 2.0
+            page_item.setPos(page_x, y_offset)
 
             pixmap = engine.render_page(i, zoom=render_scale)
             page_item.set_rendered_pixmap(pixmap, render_scale)
@@ -698,8 +714,33 @@ class PdfView(QGraphicsView):
             self._page_items.append(page_item)
             y_offset += pt_h + self.PAGE_SPACING
 
-        self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(-50, -50, 50, 50))
-        self.page_changed.emit(0)
+        self._scene.setSceneRect(0, 0, scene_w, y_offset)
+
+        # Re-attach any existing annotations from manager
+        mgr = engine.annotation_manager
+        for tb in mgr.text_boxes:
+            if 0 <= tb.page_index < len(self._page_items):
+                self._add_text_box_item(tb, self._page_items[tb.page_index])
+        for hl in mgr.highlights:
+            if 0 <= hl.page_index < len(self._page_items):
+                self._add_highlight_item(hl, self._page_items[hl.page_index])
+        for sh in mgr.shapes:
+            if 0 <= sh.page_index < len(self._page_items):
+                self._add_shape_item(sh, self._page_items[sh.page_index])
+        for fh in mgr.freehands:
+            if 0 <= fh.page_index < len(self._page_items):
+                self._add_freehand_item(fh, self._page_items[fh.page_index])
+        for img in mgr.images:
+            if 0 <= img.page_index < len(self._page_items):
+                self._add_image_item(img, self._page_items[img.page_index])
+
+        self.page_changed.emit(self._current_page_index if preserve_view else 0)
+
+        # Default zoom mode is fit to width on open
+        if preserve_view and saved_zoom is not None:
+            self.set_zoom(saved_zoom)
+        else:
+            self.zoom_fit_width()
 
     def refresh_page(self, page_index: int) -> None:
         if not self._engine or page_index >= len(self._page_items):
@@ -733,14 +774,48 @@ class PdfView(QGraphicsView):
     def zoom_out(self) -> None:
         self.set_zoom(self._zoom / 1.25)
 
+    def zoom_actual_size(self) -> None:
+        """Actual size: 100% (1:1 PDF point scale)."""
+        self.set_zoom(1.0)
+
     def zoom_fit_width(self) -> None:
+        """Fit page width to viewport width."""
         if not self._page_items:
             return
-        first_w = self._page_items[0].boundingRect().width()
-        view_w = self.viewport().width() - 80
-        if first_w > 0:
-            target_zoom = view_w / first_w
+        cur_idx = max(0, min(self._current_page_index, len(self._page_items) - 1))
+        pt_w = self._page_items[cur_idx].pt_width
+        view_w = self.viewport().width() - 40
+        if pt_w > 0 and view_w > 50:
+            target_zoom = max(0.2, min(5.0, view_w / pt_w))
             self.set_zoom(target_zoom)
+        else:
+            self.set_zoom(1.0)
+
+    def zoom_fit_height(self) -> None:
+        """Fit page height to viewport height."""
+        if not self._page_items:
+            return
+        cur_idx = max(0, min(self._current_page_index, len(self._page_items) - 1))
+        pt_h = self._page_items[cur_idx].pt_height
+        view_h = self.viewport().height() - 40
+        if pt_h > 0 and view_h > 50:
+            target_zoom = max(0.2, min(5.0, view_h / pt_h))
+            self.set_zoom(target_zoom)
+            self.centerOn(self._page_items[cur_idx])
+
+    def zoom_fit_page(self) -> None:
+        """Zoom to page level: fit entire page inside viewport."""
+        if not self._page_items:
+            return
+        cur_idx = max(0, min(self._current_page_index, len(self._page_items) - 1))
+        pt_w = self._page_items[cur_idx].pt_width
+        pt_h = self._page_items[cur_idx].pt_height
+        view_w = self.viewport().width() - 40
+        view_h = self.viewport().height() - 40
+        if pt_w > 0 and pt_h > 0 and view_w > 50 and view_h > 50:
+            target_zoom = max(0.2, min(5.0, min(view_w / pt_w, view_h / pt_h)))
+            self.set_zoom(target_zoom)
+            self.centerOn(self._page_items[cur_idx])
 
     def go_to_page(self, page_index: int) -> None:
         if 0 <= page_index < len(self._page_items):
@@ -756,11 +831,9 @@ class PdfView(QGraphicsView):
     def _get_page_under_pos(self, scene_pos: QPointF) -> Optional[tuple[int, PdfPageItem, QPointF]]:
         """Return (page_index, page_item, local_pt_pos) for a scene position."""
         for page_item in self._page_items:
-            if page_item.sceneBoundingRect().contains(scene_pos):
-                local_scene = scene_pos - page_item.pos()
-                pt_x = local_scene.x()
-                pt_y = local_scene.y()
-                return page_item.page_index, page_item, QPointF(pt_x, pt_y)
+            local = scene_pos - page_item.pos()
+            if 0 <= local.x() <= page_item.pt_width and 0 <= local.y() <= page_item.pt_height:
+                return page_item.page_index, page_item, local
         return None
 
     # ================================================================== #
@@ -806,7 +879,12 @@ class PdfView(QGraphicsView):
     def _erase_text_block(self, page_idx: int, block: TextBlock) -> None:
         """Erase / redact existing word from the PDF."""
         if self._engine:
-            self._engine.redact_area(page_idx, block.rect, replacement_text="")
+            parent_win = self.window()
+            if hasattr(parent_win, "_undo_stack"):
+                cmd = RedactCommand(self._engine, page_idx, block.rect, replacement_text="")
+                parent_win._undo_stack.push(cmd)
+            else:
+                self._engine.redact_area(page_idx, block.rect, replacement_text="")
             self.refresh_page(page_idx)
             if self._current_text_selection and self._current_text_selection.scene():
                 self._scene.removeItem(self._current_text_selection)
@@ -1035,11 +1113,25 @@ class PdfView(QGraphicsView):
             super().wheelEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        """Handle Delete/Backspace key to remove selected annotations or text blocks."""
+        """Handle Delete/Backspace key and Undo/Redo shortcuts."""
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selected()
             event.accept()
             return
+        if event.matches(QKeySequence.StandardKey.Undo):
+            parent_win = self.window()
+            if hasattr(parent_win, "action_undo"):
+                parent_win.action_undo()
+                event.accept()
+                return
+        if event.matches(QKeySequence.StandardKey.Redo) or (
+            event.key() == Qt.Key.Key_Y and (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        ):
+            parent_win = self.window()
+            if hasattr(parent_win, "action_redo"):
+                parent_win.action_redo()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def contextMenuEvent(self, event) -> None:
@@ -1085,41 +1177,83 @@ class PdfView(QGraphicsView):
 
     def _redact_and_replace_block(self, page_idx: int, block: TextBlock) -> None:
         title = self._i18n.t("tool_redact") if self._i18n else "Redact & Replace"
-        new_text, ok = QInputDialog.getText(self, title, "Replacement text:", text=block.text)
-        if ok and new_text is not None:
-            final_text = new_text
-            if self._bangla_engine and self._bangla_engine.is_active:
-                final_text = self._bangla_engine.transliterate(new_text)
-            self._engine.redact_area(
-                page_idx,
-                block.rect,
-                replacement_text=final_text,
-                font_family=self.current_properties.get("font_family", "Noto Sans Bengali"),
-                font_size=block.font_size or 12.0,
-                color=self.current_properties.get("color", "#000000"),
-            )
-            self.refresh_page(page_idx)
-            self._clear_text_block_selection()
-            self.document_modified.emit()
+        dlg = MultiLineTextDialog(
+            parent=self,
+            title=title,
+            initial_text=block.text,
+            bangla_engine=self._bangla_engine,
+            i18n=self._i18n,
+        )
+        if dlg.exec():
+            final_text = dlg.get_text()
+            if final_text is not None:
+                parent_win = self.window()
+                font_fam = self.current_properties.get("font_family", "Noto Sans Bengali")
+                font_sz = block.font_size or 12.0
+                col = self.current_properties.get("color", "#000000")
+                if hasattr(parent_win, "_undo_stack"):
+                    cmd = RedactCommand(
+                        self._engine,
+                        page_idx,
+                        block.rect,
+                        replacement_text=final_text,
+                        font_family=font_fam,
+                        font_size=font_sz,
+                        color=col,
+                    )
+                    parent_win._undo_stack.push(cmd)
+                else:
+                    self._engine.redact_area(
+                        page_idx,
+                        block.rect,
+                        replacement_text=final_text,
+                        font_family=font_fam,
+                        font_size=font_sz,
+                        color=col,
+                    )
+                self.refresh_page(page_idx)
+                self._clear_text_block_selection()
+                self.document_modified.emit()
 
     def _redact_point_area(self, page_idx: int, local_pt: QPointF) -> None:
         title = self._i18n.t("tool_redact") if self._i18n else "Redact & Replace"
-        new_text, ok = QInputDialog.getText(self, title, "Text to insert after white-out:")
-        if ok and new_text is not None:
-            final_text = new_text
-            if self._bangla_engine and self._bangla_engine.is_active:
-                final_text = self._bangla_engine.transliterate(new_text)
-            rect = (local_pt.x(), local_pt.y(), local_pt.x() + 180.0, local_pt.y() + 30.0)
-            self._engine.redact_area(
-                page_idx,
-                rect,
-                replacement_text=final_text,
-                font_family=self.current_properties.get("font_family", "Noto Sans Bengali"),
-                font_size=float(self.current_properties.get("font_size", 14.0)),
-                color=self.current_properties.get("color", "#000000"),
-            )
-            self.refresh_page(page_idx)
-            self.document_modified.emit()
+        dlg = MultiLineTextDialog(
+            parent=self,
+            title=title,
+            initial_text="",
+            bangla_engine=self._bangla_engine,
+            i18n=self._i18n,
+        )
+        if dlg.exec():
+            final_text = dlg.get_text()
+            if final_text is not None:
+                rect = (local_pt.x(), local_pt.y(), local_pt.x() + 180.0, local_pt.y() + 30.0)
+                parent_win = self.window()
+                font_fam = self.current_properties.get("font_family", "Noto Sans Bengali")
+                font_sz = float(self.current_properties.get("font_size", 14.0))
+                col = self.current_properties.get("color", "#000000")
+                if hasattr(parent_win, "_undo_stack"):
+                    cmd = RedactCommand(
+                        self._engine,
+                        page_idx,
+                        rect,
+                        replacement_text=final_text,
+                        font_family=font_fam,
+                        font_size=font_sz,
+                        color=col,
+                    )
+                    parent_win._undo_stack.push(cmd)
+                else:
+                    self._engine.redact_area(
+                        page_idx,
+                        rect,
+                        replacement_text=final_text,
+                        font_family=font_fam,
+                        font_size=font_sz,
+                        color=col,
+                    )
+                self.refresh_page(page_idx)
+                self.document_modified.emit()
 
     # ================================================================== #
     #  Annotation Creation Helpers
@@ -1244,6 +1378,14 @@ class PdfView(QGraphicsView):
         self._overlay_items[data.id] = item
         return item
 
+    def _add_image_item(self, data: ImageData, page_item: PdfPageItem) -> ImageItem:
+        scale = page_item.scale_x
+        item = ImageItem(data, scale=scale)
+        item.setPos(page_item.pos() + QPointF(data.rect[0] * scale, data.rect[1] * scale))
+        self._scene.addItem(item)
+        self._overlay_items[data.id] = item
+        return item
+
     def add_image_at(self, page_idx: int, image_path: str, pt_pos: tuple[float, float]) -> None:
         if 0 <= page_idx < len(self._page_items):
             page_item = self._page_items[page_idx]
@@ -1254,11 +1396,7 @@ class PdfView(QGraphicsView):
                 image_path=image_path,
                 opacity=1.0,
             )
-            scale = page_item.scale_x
-            item = ImageItem(data, scale=scale)
-            item.setPos(page_item.pos() + QPointF(pt_pos[0] * scale, pt_pos[1] * scale))
-            self._scene.addItem(item)
-            self._overlay_items[data.id] = item
+            self._add_image_item(data, page_item)
             self.annotation_added.emit(data)
 
     def remove_overlay_by_id(self, item_id: str) -> None:

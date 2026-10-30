@@ -122,6 +122,26 @@ class AnnotationManager(QObject):
         self._freehands: dict[str, FreehandData] = {}
         self._images: dict[str, ImageData] = {}
 
+    @property
+    def text_boxes(self) -> list[TextBoxData]:
+        return list(self._text_boxes.values())
+
+    @property
+    def highlights(self) -> list[HighlightData]:
+        return list(self._highlights.values())
+
+    @property
+    def shapes(self) -> list[ShapeData]:
+        return list(self._shapes.values())
+
+    @property
+    def freehands(self) -> list[FreehandData]:
+        return list(self._freehands.values())
+
+    @property
+    def images(self) -> list[ImageData]:
+        return list(self._images.values())
+
     # ----- text boxes -----
 
     def add_text_box(self, data: TextBoxData) -> None:
@@ -486,3 +506,48 @@ class RemoveImageCommand(Command):
     @property
     def description(self) -> str:
         return f"Remove image on page {self._data.page_index}"
+
+
+# ===================================================================
+# Command subclasses – redactions
+# ===================================================================
+
+class RedactCommand(Command):
+    """Undoable redaction: stores doc snapshot so undo can restore original content."""
+
+    def __init__(
+        self,
+        engine,
+        page_index: int,
+        rect: tuple[float, float, float, float],
+        replacement_text: str = "",
+        font_family: str = "Noto Sans Bengali",
+        font_size: float = 12.0,
+        color: str = "#000000",
+    ) -> None:
+        self._engine = engine
+        self._page_index = page_index
+        self._rect = rect
+        self._replacement_text = replacement_text
+        self._font_family = font_family
+        self._font_size = font_size
+        self._color = color
+        self._before_bytes = engine.document.tobytes()
+
+    def execute(self) -> None:
+        self._engine.redact_area(
+            self._page_index,
+            self._rect,
+            replacement_text=self._replacement_text,
+            font_family=self._font_family,
+            font_size=self._font_size,
+            color=self._color,
+        )
+
+    def undo(self) -> None:
+        import pymupdf
+        self._engine._doc = pymupdf.open(stream=self._before_bytes, filetype="pdf")
+
+    @property
+    def description(self) -> str:
+        return f"Redact area on page {self._page_index}"

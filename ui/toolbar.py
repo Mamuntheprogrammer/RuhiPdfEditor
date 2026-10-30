@@ -93,6 +93,9 @@ class EditorToolBar(QToolBar):
     redo_requested = Signal()
     zoom_in_requested = Signal()
     zoom_out_requested = Signal()
+    zoom_fit_requested = Signal()
+    zoom_page_requested = Signal()
+    read_mode_requested = Signal()
     bangla_toggled = Signal(bool)
     delete_requested = Signal()
 
@@ -148,6 +151,13 @@ class EditorToolBar(QToolBar):
         # ---- Zoom ---- #
         self._zoom_in_action = self._make_action("zoom-in.svg", "🔍+", "zoom_in", self.zoom_in_requested.emit)
         self._zoom_out_action = self._make_action("zoom-out.svg", "🔍-", "zoom_out", self.zoom_out_requested.emit)
+        self._zoom_fit_action = self._make_action("zoom-fit.svg", "↔", "zoom_fit_width", self.zoom_fit_requested.emit)
+        self._zoom_page_action = self._make_action("zoom-page.svg", "📄", "zoom_fit_page", self.zoom_page_requested.emit)
+
+        self.addSeparator()
+
+        # ---- Read Mode ---- #
+        self._read_mode_action = self._make_action("read-mode.svg", "📖", "read_mode", self.read_mode_requested.emit)
 
         self.addSeparator()
 
@@ -213,6 +223,9 @@ class EditorToolBar(QToolBar):
         self._delete_action.setToolTip(i18n.t("action_delete"))
         self._zoom_in_action.setToolTip(i18n.t("zoom_in"))
         self._zoom_out_action.setToolTip(i18n.t("zoom_out"))
+        self._zoom_fit_action.setToolTip(i18n.t("zoom_fit_width"))
+        self._zoom_page_action.setToolTip(i18n.t("zoom_fit_page"))
+        self._read_mode_action.setToolTip(i18n.t("read_mode"))
         self._bangla_action.setToolTip(i18n.t("toggle_bangla"))
 
         for tool, _svg, _fallback, key in _TOOL_DEFS:
