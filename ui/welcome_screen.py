@@ -54,6 +54,8 @@ class RecentFilesManager:
         if not file_path:
             return
         abs_path = os.path.abspath(file_path)
+        from ui.user_paths import UserPathsManager
+        UserPathsManager.set_last_pdf_dir(abs_path)
         existing = cls.get_recent_files()
 
         # Remove existing if already in list
@@ -203,13 +205,16 @@ class DragDropZone(QFrame):
         super().mousePressEvent(event)
 
     def _browse_file(self) -> None:
+        from ui.user_paths import UserPathsManager
+        default_dir = UserPathsManager.get_last_pdf_dir()
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open PDF Document - RuhiPdf Editor",
-            "",
+            default_dir,
             "PDF Files (*.pdf);;All Files (*.*)",
         )
         if path:
+            UserPathsManager.set_last_pdf_dir(path)
             self.file_dropped.emit(path)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:

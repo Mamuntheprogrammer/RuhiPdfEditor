@@ -300,9 +300,12 @@ class MainWindow(QMainWindow):
 
         # If Image or Signature tool chosen, prompt file dialog immediately
         if tool in (Tool.IMAGE, Tool.SIGNATURE):
+            from ui.user_paths import UserPathsManager
+            default_img_dir = UserPathsManager.get_last_image_dir()
             file_filter = "Images (*.png *.jpg *.jpeg *.bmp *.svg);;All Files (*.*)"
-            path, _ = QFileDialog.getOpenFileName(self, self._i18n.t("select_image_file"), "", file_filter)
+            path, _ = QFileDialog.getOpenFileName(self, self._i18n.t("select_image_file"), default_img_dir, file_filter)
             if path:
+                UserPathsManager.set_last_image_dir(path)
                 self._view._update_current_page_from_viewport()
                 cur_page = self._view._current_page_index
                 insert_pos = self._view.get_viewport_center_on_page(cur_page)
@@ -491,13 +494,16 @@ class MainWindow(QMainWindow):
         self._show_welcome_screen()
 
     def action_open(self) -> None:
+        from ui.user_paths import UserPathsManager
+        default_dir = UserPathsManager.get_last_pdf_dir()
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             self._i18n.t("select_pdf_files"),
-            "",
+            default_dir,
             "PDF Files (*.pdf);;All Files (*.*)",
         )
         if file_path:
+            UserPathsManager.set_last_pdf_dir(file_path)
             self.open_file(file_path)
 
     def open_file(self, file_path: str) -> None:
@@ -610,7 +616,11 @@ class MainWindow(QMainWindow):
             return self.action_save_as()
 
     def action_save_as(self) -> bool:
-        suggested = self._engine.file_path or "document.pdf"
+        from ui.user_paths import UserPathsManager
+        if self._engine.file_path:
+            suggested = self._engine.file_path
+        else:
+            suggested = os.path.join(UserPathsManager.get_last_pdf_dir(), "document.pdf")
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             self._i18n.t("save_as"),
@@ -618,6 +628,7 @@ class MainWindow(QMainWindow):
             "PDF Files (*.pdf);;All Files (*.*)",
         )
         if file_path:
+            UserPathsManager.set_last_pdf_dir(file_path)
             try:
                 self._engine.save_as(file_path)
                 RecentFilesManager.add_recent_file(file_path)

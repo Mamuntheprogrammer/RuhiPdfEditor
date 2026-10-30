@@ -99,13 +99,16 @@ class MergeDialog(QDialog):
     # ---- List management ---- #
 
     def _add_files(self) -> None:
+        from ui.user_paths import UserPathsManager
+        default_dir = UserPathsManager.get_last_pdf_dir()
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             self._i18n.t("select_pdf_files"),
-            "",
+            default_dir,
             "PDF Files (*.pdf)",
         )
         for p in paths:
+            UserPathsManager.set_last_pdf_dir(p)
             self._file_list.addItem(p)
 
     def _remove_selected(self) -> None:
@@ -202,10 +205,13 @@ class SplitDialog(QDialog):
         layout.addLayout(ok_cancel)
 
     def _browse_dir(self) -> None:
+        from ui.user_paths import UserPathsManager
+        default_dir = UserPathsManager.get_last_pdf_dir()
         directory = QFileDialog.getExistingDirectory(
-            self, self._i18n.t("select_output_directory")
+            self, self._i18n.t("select_output_directory"), default_dir
         )
         if directory:
+            UserPathsManager.set_last_pdf_dir(directory)
             self._dir_edit.setText(directory)
 
     def _validate_and_accept(self) -> None:
@@ -371,10 +377,13 @@ class ExportImageDialog(QDialog):
         layout.addLayout(ok_cancel)
 
     def _browse_output(self) -> None:
+        from ui.user_paths import UserPathsManager
+        default_dir = UserPathsManager.get_last_image_dir()
         directory = QFileDialog.getExistingDirectory(
-            self, self._i18n.t("select_output_directory")
+            self, self._i18n.t("select_output_directory"), default_dir
         )
         if directory:
+            UserPathsManager.set_last_image_dir(directory)
             self._output_edit.setText(directory)
 
     def _validate_and_accept(self) -> None:
@@ -432,20 +441,22 @@ class ExportImageDialog(QDialog):
 # ====================================================================== #
 
 class AboutDialog(QDialog):
-    """About dialog showing application info and credits."""
+    """About dialog showing application info, developer details, and credits."""
 
     def __init__(self, i18n: I18n, parent=None) -> None:
         super().__init__(parent)
         self._i18n = i18n
         self.setWindowTitle(i18n.t("about"))
-        self.setFixedSize(420, 380)
+        self.setFixedSize(480, 490)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(8)
 
         # App title
         title = QLabel(i18n.t("app_title"))
         title_font = title.font()
-        title_font.setPointSize(18)
+        title_font.setPointSize(17)
         title_font.setBold(True)
         title.setFont(title_font)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -454,31 +465,53 @@ class AboutDialog(QDialog):
         # Version
         version = QLabel(i18n.t("version").replace("{ver}", "1.0.0"))
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version.setStyleSheet("color: #64748b; font-size: 11px;")
         layout.addWidget(version)
 
-        layout.addSpacing(12)
+        layout.addSpacing(6)
 
-        # Description
+        # Rich details browser
         desc = QTextBrowser()
         desc.setOpenExternalLinks(True)
+        desc.setStyleSheet("""
+            QTextBrowser {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 10px;
+                color: #334155;
+            }
+        """)
+        dev_title = i18n.t("developer_info")
         desc.setHtml(
-            f"<p>{i18n.t('about_description')}</p>"
-            "<hr/>"
-            f"<p><b>{i18n.t('credits')}:</b></p>"
-            "<ul>"
-            f"<li>PySide6 (Qt for Python)</li>"
-            f"<li>PyMuPDF (fitz)</li>"
-            f"<li>Noto Sans Bengali {i18n.t('font')}</li>"
+            f"<p style='margin-bottom:8px; line-height: 1.4;'>{i18n.t('about_description')}</p>"
+            "<hr style='border:0; border-top:1px solid #cbd5e1;'/>"
+            f"<p style='font-size:12px; font-weight:bold; color:#0f172a; margin-top:6px; margin-bottom:4px;'>👨‍💻 {dev_title}:</p>"
+            "<table style='font-size:12px; line-height:1.7; color:#334155; margin-bottom:6px;'>"
+            "<tr><td><b>Name:</b></td><td style='padding-left:10px;'><b>Md. Abdullah Al Mamun</b></td></tr>"
+            "<tr><td><b>Email:</b></td><td style='padding-left:10px;'><a href='mailto:a.a.mamunbu@gmail.com' style='color:#0284c7; text-decoration:none;'>a.a.mamunbu@gmail.com</a></td></tr>"
+            "<tr><td><b>LinkedIn:</b></td><td style='padding-left:10px;'><a href='https://www.linkedin.com/in/mamuntheprogrammer' style='color:#0284c7; text-decoration:none;'>linkedin.com/in/mamuntheprogrammer</a></td></tr>"
+            "<tr><td><b>GitHub:</b></td><td style='padding-left:10px;'><a href='https://github.com/Mamuntheprogrammer' style='color:#0284c7; text-decoration:none;'>github.com/Mamuntheprogrammer</a></td></tr>"
+            "</table>"
+            "<hr style='border:0; border-top:1px solid #cbd5e1;'/>"
+            f"<p style='font-size:11px; font-weight:bold; color:#0f172a; margin-top:6px; margin-bottom:2px;'>{i18n.t('credits')}:</p>"
+            "<ul style='font-size:11px; color:#64748b; margin-top:2px; margin-bottom:6px; padding-left:18px; line-height: 1.4;'>"
+            "<li>PySide6 (Qt for Python)</li>"
+            "<li>PyMuPDF</li>"
+            f"<li>Noto Sans Bengali &amp; Nikosh {i18n.t('font')}</li>"
             f"<li>HarfBuzz {i18n.t('text_shaping')}</li>"
             "</ul>"
-            f"<p>{i18n.t('license_info')}</p>"
+            f"<p style='font-size:10px; color:#94a3b8; margin-top:4px;'>{i18n.t('license_info')}</p>"
         )
         layout.addWidget(desc)
+
+        layout.addSpacing(6)
 
         # Close button
         close_btn = QPushButton(i18n.t("close"))
         close_btn.clicked.connect(self.accept)
         close_btn.setProperty("primary", True)
+        close_btn.setFixedWidth(100)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
 

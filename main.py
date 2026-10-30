@@ -52,7 +52,8 @@ def main() -> int:
     app.setApplicationName("RuhiPdf Editor")
     app.setApplicationDisplayName("RuhiPdf Editor")
     app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("RuhiPdf")
+    app.setOrganizationName("Md. Abdullah Al Mamun")
+    app.setOrganizationDomain("github.com/Mamuntheprogrammer")
 
     app_icon_path = Path(__file__).parent / "icons" / "app_icon.png"
     if app_icon_path.exists():

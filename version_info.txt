@@ -1,0 +1,41 @@
+# UTF-8
+#
+# Windows File Version Information for RuhiPdf Editor
+#
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904b0',
+          [
+            StringStruct('CompanyName', 'Md. Abdullah Al Mamun'),
+            StringStruct('FileDescription', 'RuhiPdf Editor - Modern PDF Editor with Bangla Support'),
+            StringStruct('FileVersion', '1.0.0.0'),
+            StringStruct('InternalName', 'RuhiPdfEditor'),
+            StringStruct('LegalCopyright', 'Copyright (C) 2026 Md. Abdullah Al Mamun. All rights reserved.'),
+            StringStruct('OriginalFilename', 'RuhiPdfEditor.exe'),
+            StringStruct('ProductName', 'RuhiPdf Editor'),
+            StringStruct('ProductVersion', '1.0.0.0'),
+            StringStruct('Author', 'Md. Abdullah Al Mamun'),
+            StringStruct('Contact', 'a.a.mamunbu@gmail.com'),
+            StringStruct('GitHub', 'https://github.com/Mamuntheprogrammer'),
+            StringStruct('LinkedIn', 'https://www.linkedin.com/in/mamuntheprogrammer')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+
