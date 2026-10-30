@@ -6,9 +6,16 @@ A fully offline desktop PDF editor with proper Bangla (Bengali) text shaping.
 Usage:
     python main.py [pdf_file]
 """
-import sys
 import os
+import sys
 from pathlib import Path
+
+# Suppress PyMuPDF fitz deprecation warning by aliasing pymupdf directly
+try:
+    import pymupdf as fitz
+    sys.modules.setdefault("fitz", fitz)
+except ImportError:
+    pass
 
 def setup_environment() -> None:
     """Set up the application environment.
@@ -42,9 +49,14 @@ def main() -> int:
     )
     
     app = QApplication(sys.argv)
-    app.setApplicationName("PDF Editor")
+    app.setApplicationName("RuhiPdf Editor")
+    app.setApplicationDisplayName("RuhiPdf Editor")
     app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("PDFEditor")
+    app.setOrganizationName("RuhiPdf")
+
+    app_icon_path = Path(__file__).parent / "icons" / "app_icon.png"
+    if app_icon_path.exists():
+        app.setWindowIcon(QIcon(str(app_icon_path)))
     
     # Create and show main window
     window = MainWindow()

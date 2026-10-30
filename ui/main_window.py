@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QStatusBar,
 )
 
@@ -55,15 +56,21 @@ from ui.properties_panel import PropertiesPanel
 from ui.themes import ThemeManager
 from ui.thumbnail_panel import ThumbnailPanel
 from ui.toolbar import EditorToolBar, Tool
+from ui.welcome_screen import RecentFilesManager, WelcomeScreen
 
 logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    """Main application window for the PDF Editor."""
+    """Main application window for RuhiPdf Editor."""
 
     def __init__(self) -> None:
         super().__init__()
+
+        # Set Application Icon
+        app_icon_path = Path(__file__).parent.parent / "icons" / "app_icon.png"
+        if app_icon_path.exists():
+            self.setWindowIcon(QIcon(str(app_icon_path)))
 
         # 1. Core Model & Engines
         self._engine = PdfEngine()
@@ -73,10 +80,17 @@ class MainWindow(QMainWindow):
         self._is_dark_theme = False
         self._is_modified = False
 
-        # 2. Setup Central Canvas
+        # 2. Setup Central Stack: Welcome Screen & PDF View
+        self._stack = QStackedWidget(self)
+        self._welcome = WelcomeScreen(self._i18n, self)
+        self._welcome.file_selected.connect(self.open_file)
+        self._stack.addWidget(self._welcome)
+
         self._view = PdfView(self)
         self._view.set_dependencies(self._engine, self._bangla_engine, self._i18n)
-        self.setCentralWidget(self._view)
+        self._stack.addWidget(self._view)
+
+        self.setCentralWidget(self._stack)
 
         # 3. Setup Sidebars & Toolbar
         self._toolbar = EditorToolBar(self._i18n, self)
@@ -106,18 +120,15 @@ class MainWindow(QMainWindow):
         if qapp:
             qapp.installEventFilter(self._bangla_engine)
 
-        # 8. Start with new document
-        self._engine.create_new()
-        self._view.load_document(self._engine)
-        self._thumb_panel.refresh(self._engine)
-        self._update_undo_redo_ui()
-
         # Apply Light Theme by default
         ThemeManager.apply_theme(QApplication.instance(), dark=False)
         self.retranslate_ui()
 
+        # 8. Start with professional Welcome Screen
+        self._show_welcome_screen()
+
         self.resize(1360, 850)
-        logger.info("MainWindow initialized successfully.")
+        logger.info("RuhiPdf Editor MainWindow initialized successfully.")
 
     # ================================================================== #
     #  Status Bar Setup
@@ -150,6 +161,7 @@ class MainWindow(QMainWindow):
         self._act_open = self._menu_file.addAction(self._i18n.t("open_file"), self.action_open, QKeySequence.StandardKey.Open)
         self._act_save = self._menu_file.addAction(self._i18n.t("save_file"), self.action_save, QKeySequence.StandardKey.Save)
         self._act_save_as = self._menu_file.addAction(self._i18n.t("save_as"), self.action_save_as, QKeySequence.StandardKey.SaveAs)
+        self._act_close = self._menu_file.addAction(self._i18n.t("close_file"), self.action_close_document, QKeySequence("Ctrl+W"))
         self._menu_file.addSeparator()
         self._act_export = self._menu_file.addAction(self._i18n.t("export_as_image"), self.action_export_image)
         self._menu_file.addSeparator()
@@ -211,6 +223,7 @@ class MainWindow(QMainWindow):
         # Toolbar actions
         self._toolbar.open_requested.connect(self.action_open)
         self._toolbar.save_requested.connect(self.action_save)
+        self._toolbar.close_requested.connect(self.action_close_document)
         self._toolbar.undo_requested.connect(self.action_undo)
         self._toolbar.redo_requested.connect(self.action_redo)
         self._toolbar.delete_requested.connect(self._view.delete_selected)
@@ -249,6 +262,9 @@ class MainWindow(QMainWindow):
         self._prop_panel.color_changed.connect(lambda c: self._view.update_properties({"color": c}))
         self._prop_panel.bold_changed.connect(lambda b: self._view.update_properties({"bold": b}))
         self._prop_panel.italic_changed.connect(lambda i: self._view.update_properties({"italic": i}))
+        self._prop_panel.underline_changed.connect(lambda u: self._view.update_properties({"underline": u}))
+        self._prop_panel.strike_changed.connect(lambda s: self._view.update_properties({"strikethrough": s}))
+        self._prop_panel.annotation_type_changed.connect(self._on_annotation_style_changed)
         self._prop_panel.stroke_color_changed.connect(lambda c: self._view.update_properties({"stroke_color": c}))
         self._prop_panel.fill_color_changed.connect(lambda c: self._view.update_properties({"fill_color": c}))
         self._prop_panel.stroke_width_changed.connect(lambda w: self._view.update_properties({"stroke_width": w}))
@@ -256,6 +272,9 @@ class MainWindow(QMainWindow):
 
         # View selection -> Properties panel sync
         self._view.text_box_selected.connect(self._prop_panel.show_text_properties)
+        self._view.shape_selected.connect(self._prop_panel.show_shape_properties)
+        self._view.annotation_selected.connect(self._prop_panel.show_annotation_properties)
+        self._view.image_selected.connect(self._prop_panel.show_image_properties)
         self._view.selection_cleared.connect(self._on_selection_cleared)
         self._view.document_modified.connect(self._mark_modified)
 
@@ -284,8 +303,10 @@ class MainWindow(QMainWindow):
             file_filter = "Images (*.png *.jpg *.jpeg *.bmp *.svg);;All Files (*.*)"
             path, _ = QFileDialog.getOpenFileName(self, self._i18n.t("select_image_file"), "", file_filter)
             if path:
+                self._view._update_current_page_from_viewport()
                 cur_page = self._view._current_page_index
-                self._view.add_image_at(cur_page, path, (100.0, 100.0))
+                insert_pos = self._view.get_viewport_center_on_page(cur_page)
+                self._view.add_image_at(cur_page, path, insert_pos)
             self._toolbar.set_current_tool(Tool.SELECT)
             self._view.set_tool(Tool.SELECT)
 
@@ -294,6 +315,16 @@ class MainWindow(QMainWindow):
             self._prop_panel.set_tool(Tool.TEXT)
         else:
             self._prop_panel.show_empty()
+
+    def _on_annotation_style_changed(self, style_name: str) -> None:
+        style_tool_map = {
+            "highlight": Tool.HIGHLIGHT,
+            "underline": Tool.UNDERLINE,
+            "strikethrough": Tool.STRIKETHROUGH,
+        }
+        target_tool = style_tool_map.get(style_name, Tool.HIGHLIGHT)
+        self._view.set_tool(target_tool)
+        self._view.update_properties({"annotation_type": style_name})
 
     def _mark_modified(self) -> None:
         self._is_modified = True
@@ -424,6 +455,41 @@ class MainWindow(QMainWindow):
     #  File & Dialog Actions
     # ================================================================== #
 
+    def _show_welcome_screen(self) -> None:
+        """Show the professional Welcome Screen and disable document-specific controls."""
+        self._stack.setCurrentWidget(self._welcome)
+        self._welcome.refresh_recent_files()
+        self._thumb_panel.setVisible(False)
+        self._prop_panel.setVisible(False)
+        self._toolbar._save_action.setEnabled(False)
+        self._toolbar._close_action.setEnabled(False)
+        self._act_save.setEnabled(False)
+        self._act_save_as.setEnabled(False)
+        self._act_close.setEnabled(False)
+        self.setWindowTitle(self._i18n.t("app_title"))
+        self._status_bar.showMessage(self._i18n.t("ready"), 3000)
+
+    def action_close_document(self) -> None:
+        """Close current PDF and return to the professional Welcome Screen."""
+        if self._is_modified:
+            reply = QMessageBox.question(
+                self,
+                self._i18n.t("confirm"),
+                self._i18n.t("confirm_unsaved_changes"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                saved = self.action_save(prompt_overwrite=True)
+                if not saved or self._is_modified:
+                    return
+            elif reply == QMessageBox.StandardButton.Cancel:
+                return
+
+        self._engine.close()
+        self._is_modified = False
+        self._undo_stack.clear()
+        self._show_welcome_screen()
+
     def action_open(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -437,44 +503,141 @@ class MainWindow(QMainWindow):
     def open_file(self, file_path: str) -> None:
         try:
             self._engine.open(file_path)
+            RecentFilesManager.add_recent_file(file_path)
             self._undo_stack.clear()
             self._is_modified = False
+
+            # Switch to editor view and display panels first so viewport width is established
+            self._thumb_panel.setVisible(True)
+            self._prop_panel.setVisible(True)
+            self._stack.setCurrentWidget(self._view)
+
             self._view.load_document(self._engine)
             self._thumb_panel.refresh(self._engine)
+
+            self._toolbar._save_action.setEnabled(True)
+            self._toolbar._close_action.setEnabled(True)
+            self._act_save.setEnabled(True)
+            self._act_save_as.setEnabled(True)
+            self._act_close.setEnabled(True)
             self.setWindowTitle(f"{os.path.basename(file_path)} - {self._i18n.t('app_title')}")
             self._status_bar.showMessage(f"Opened: {file_path}", 3000)
+
+            # Re-fit to width once layout geometry has completely settled
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, self._view.zoom_fit_width)
+            QTimer.singleShot(50, self._view.zoom_fit_width)
         except Exception as e:
             logger.error("Failed to open file: %s", e)
             QMessageBox.critical(self, self._i18n.t("error"), f"Failed to open PDF:\n{e}")
 
-    def action_save(self) -> None:
+    def action_save(self, *args: Any, prompt_overwrite: bool = True) -> bool:
+        """Save the document. If saving will overwrite the original PDF file,
+        prompts the user with a warning dialog offering Overwrite, Save As, or Cancel.
+        Returns True if saved, False otherwise.
+        """
         if self._engine.file_path:
+            if prompt_overwrite:
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Icon.Warning)
+                msg_box.setWindowTitle(self._i18n.t("overwrite_warning_title"))
+                fname = os.path.basename(self._engine.file_path)
+                msg_box.setText(self._i18n.t("overwrite_warning_text", filename=fname))
+                msg_box.setInformativeText(self._i18n.t("overwrite_warning_info", path=self._engine.file_path))
+
+                btn_overwrite = msg_box.addButton(
+                    self._i18n.t("btn_overwrite"), QMessageBox.ButtonRole.AcceptRole
+                )
+                btn_save_as = msg_box.addButton(
+                    self._i18n.t("btn_save_as"), QMessageBox.ButtonRole.ActionRole
+                )
+                btn_cancel = msg_box.addButton(QMessageBox.StandardButton.Cancel)
+
+                btn_overwrite.setStyleSheet(
+                    "background-color: #dc2626; color: #ffffff; font-weight: 600; padding: 6px 14px; border-radius: 4px;"
+                )
+                btn_save_as.setStyleSheet(
+                    "background-color: #2563eb; color: #ffffff; font-weight: 600; padding: 6px 14px; border-radius: 4px;"
+                )
+                msg_box.setDefaultButton(btn_save_as)
+
+                msg_box.exec()
+                clicked = msg_box.clickedButton()
+                if clicked == btn_overwrite:
+                    pass  # User explicitly confirmed overwrite
+                elif clicked == btn_save_as:
+                    return self.action_save_as()
+                else:
+                    return False  # Canceled
+
             try:
                 self._engine.save()
+                RecentFilesManager.add_recent_file(self._engine.file_path)
                 self._is_modified = False
                 self._status_bar.showMessage(self._i18n.t("saved_successfully", path=self._engine.file_path), 3000)
+                return True
+            except PermissionError as e:
+                logger.error("Save permission denied: %s", e)
+                fname = os.path.basename(self._engine.file_path)
+                reply = QMessageBox.warning(
+                    self,
+                    self._i18n.t("warning"),
+                    f"Cannot overwrite '{fname}' because the file is currently locked by another program (such as Adobe Acrobat or a web browser) or is read-only.\n\nWould you like to save it with a new name using 'Save As'?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    return self.action_save_as()
+                return False
             except Exception as e:
+                if "permission" in str(e).lower() or "cannot remove file" in str(e).lower():
+                    logger.error("Save permission denied: %s", e)
+                    fname = os.path.basename(self._engine.file_path)
+                    reply = QMessageBox.warning(
+                        self,
+                        self._i18n.t("warning"),
+                        f"Cannot overwrite '{fname}' because the file is locked by another program or has restricted permissions.\n\nWould you like to save it with a new name using 'Save As'?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes,
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        return self.action_save_as()
+                    return False
                 logger.error("Save failed: %s", e)
                 QMessageBox.critical(self, self._i18n.t("error"), f"Failed to save:\n{e}")
+                return False
         else:
-            self.action_save_as()
+            return self.action_save_as()
 
-    def action_save_as(self) -> None:
+    def action_save_as(self) -> bool:
+        suggested = self._engine.file_path or "document.pdf"
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             self._i18n.t("save_as"),
-            "document.pdf",
+            suggested,
             "PDF Files (*.pdf);;All Files (*.*)",
         )
         if file_path:
             try:
                 self._engine.save_as(file_path)
+                RecentFilesManager.add_recent_file(file_path)
                 self._is_modified = False
                 self.setWindowTitle(f"{os.path.basename(file_path)} - {self._i18n.t('app_title')}")
                 self._status_bar.showMessage(self._i18n.t("saved_successfully", path=file_path), 3000)
+                return True
+            except PermissionError as e:
+                logger.error("Save As permission denied: %s", e)
+                QMessageBox.critical(
+                    self,
+                    self._i18n.t("error"),
+                    f"Cannot save to '{os.path.basename(file_path)}' (Permission Denied). Please select a different file name or location.",
+                )
+                return False
             except Exception as e:
                 logger.error("Save As failed: %s", e)
                 QMessageBox.critical(self, self._i18n.t("error"), f"Failed to save:\n{e}")
+                return False
+        return False
 
     def action_export_image(self) -> None:
         dlg = ExportImageDialog(
@@ -632,6 +795,7 @@ class MainWindow(QMainWindow):
         self._act_open.setText(self._i18n.t("open_file"))
         self._act_save.setText(self._i18n.t("save_file"))
         self._act_save_as.setText(self._i18n.t("save_as"))
+        self._act_close.setText(self._i18n.t("close_file"))
         self._act_export.setText(self._i18n.t("export_as_image"))
         self._act_exit.setText(self._i18n.t("exit"))
 
@@ -684,8 +848,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
             )
             if reply == QMessageBox.StandardButton.Yes:
-                self.action_save()
-                if not self._is_modified:
+                saved = self.action_save(prompt_overwrite=True)
+                if saved and not self._is_modified:
                     event.accept()
                 else:
                     event.ignore()

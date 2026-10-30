@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeyEvent, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -496,6 +496,7 @@ class MultiLineTextDialog(QDialog):
         initial_text: str = "",
         bangla_engine=None,
         i18n: I18n | None = None,
+        initial_bangla_mode: bool | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -516,15 +517,18 @@ class MultiLineTextDialog(QDialog):
         self._label.setStyleSheet("font-weight: 600; font-size: 13px;")
         layout.addWidget(self._label)
 
+        import unicodedata
+        clean_initial = unicodedata.normalize("NFC", initial_text) if initial_text else ""
+
         self.text_edit = QPlainTextEdit()
         # Mark both the text edit and its viewport to bypass eventFilter buffering
         self.text_edit.setProperty("no_bangla_filter", True)
         if self.text_edit.viewport():
             self.text_edit.viewport().setProperty("no_bangla_filter", True)
-        self.text_edit.setPlainText(initial_text)
+        self.text_edit.setPlainText(clean_initial)
         self.text_edit.setPlaceholderText("Type your text here... (Press Enter for a new line)")
         self.text_edit.setStyleSheet(
-            "QPlainTextEdit { font-size: 14px; padding: 8px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #ffffff; color: #0f172a; }"
+            "QPlainTextEdit { font-family: 'Noto Sans Bengali', 'SolaimanLipi', 'Kalpurush', 'Segoe UI', Arial, sans-serif; font-size: 15px; padding: 8px; border: 1.5px solid #cbd5e1; border-radius: 6px; background: #ffffff; color: #0f172a; }"
             "QPlainTextEdit:focus { border: 1.5px solid #0284c7; }"
         )
         layout.addWidget(self.text_edit, 1)
@@ -557,10 +561,12 @@ class MultiLineTextDialog(QDialog):
         bottom_row = QHBoxLayout()
         if self._bangla_engine:
             self._bangla_cb = QCheckBox("Bangla Phonetic (Avro)")
-            # Default to unchecked so normal typing is never intercepted or converted unexpectedly
-            self._bangla_cb.setChecked(False)
+            use_bangla = bool(initial_bangla_mode)
+            self._bangla_cb.setChecked(use_bangla)
             self._bangla_cb.toggled.connect(self._on_bangla_toggled)
             bottom_row.addWidget(self._bangla_cb)
+            if use_bangla:
+                self._on_bangla_toggled(True)
         else:
             self._bangla_cb = None
 
@@ -621,6 +627,13 @@ class MultiLineTextDialog(QDialog):
         else:
             self._label.setText(f"{self._prompt}:")
 
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        wh = self.windowHandle()
+        if wh:
+            wh.setProperty("no_bangla_filter", True)
+        QTimer.singleShot(0, self.text_edit.setFocus)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self.accept()
@@ -628,7 +641,9 @@ class MultiLineTextDialog(QDialog):
         super().keyPressEvent(event)
 
     def get_text(self) -> str:
+        import unicodedata
         text = self.text_edit.toPlainText()
         if self._bangla_cb and self._bangla_cb.isChecked() and self._bangla_engine:
-            return self._bangla_engine.transliterate(text)
-        return text
+            converted = self._bangla_engine.transliterate(text)
+            return unicodedata.normalize("NFC", converted)
+        return unicodedata.normalize("NFC", text)

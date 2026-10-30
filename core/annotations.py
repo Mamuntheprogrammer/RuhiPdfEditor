@@ -40,6 +40,8 @@ class TextBoxData:
     color: str = "#000000"
     bold: bool = False
     italic: bool = False
+    underline: bool = False
+    strikethrough: bool = False
     opacity: float = 1.0
     id: str = field(default_factory=_new_id)
 
@@ -243,6 +245,12 @@ class AnnotationManager(QObject):
     def get_image(self, image_id: str) -> ImageData | None:
         """Retrieve a single image by id."""
         return self._images.get(image_id)
+
+    def modify_image(self, image_id: str, new_data: ImageData) -> None:
+        """Replace the data for an existing image annotation."""
+        if image_id in self._images:
+            self._images[image_id] = new_data
+            self.annotation_modified.emit(new_data)
 
     # ----- queries -----
 
@@ -524,6 +532,8 @@ class RedactCommand(Command):
         font_family: str = "Noto Sans Bengali",
         font_size: float = 12.0,
         color: str = "#000000",
+        bold: bool = False,
+        italic: bool = False,
     ) -> None:
         self._engine = engine
         self._page_index = page_index
@@ -532,6 +542,8 @@ class RedactCommand(Command):
         self._font_family = font_family
         self._font_size = font_size
         self._color = color
+        self._bold = bold
+        self._italic = italic
         self._before_bytes = engine.document.tobytes()
 
     def execute(self) -> None:
@@ -542,6 +554,8 @@ class RedactCommand(Command):
             font_family=self._font_family,
             font_size=self._font_size,
             color=self._color,
+            bold=self._bold,
+            italic=self._italic,
         )
 
     def undo(self) -> None:

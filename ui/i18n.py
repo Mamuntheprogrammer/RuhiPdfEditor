@@ -29,11 +29,11 @@ class I18n(QObject):
     STRINGS: dict[Language, dict[str, str]] = {
         Language.ENGLISH: {
             # Application
-            "app_title": "PDF Editor (Bangla Supported)",
+            "app_title": "RuhiPdf Editor",
             "untitled": "Untitled",
             "version": "Version {ver}",
             "ready": "Ready",
-            "about": "About PDF Editor",
+            "about": "About RuhiPdf Editor",
             "about_description": "A simple, fully offline desktop PDF editor with proper HarfBuzz-shaped Bangla support.",
             "credits": "Credits",
             "font": "Font",
@@ -53,6 +53,7 @@ class I18n(QObject):
             "open_file": "Open PDF",
             "save_file": "Save",
             "save_as": "Save As...",
+            "close_file": "Close PDF",
             "export_as_image": "Export Page as Image...",
             "close": "Close",
             "exit": "Exit",
@@ -89,6 +90,32 @@ class I18n(QObject):
             "tool_signature": "Insert Signature",
             "tool_eraser": "Erase / Redact Text (E)",
             "tool_redact": "Redact / Replace Text",
+
+            # Toolbar single-word button labels (concise, 10px)
+            "lbl_open": "Open",
+            "lbl_save": "Save",
+            "lbl_close": "Close",
+            "lbl_undo": "Undo",
+            "lbl_redo": "Redo",
+            "lbl_delete": "Delete",
+            "lbl_select": "Select",
+            "lbl_text": "Text",
+            "lbl_highlight": "Highlight",
+            "lbl_underline": "Underline",
+            "lbl_strike": "Strike",
+            "lbl_rect": "Rect",
+            "lbl_line": "Line",
+            "lbl_arrow": "Arrow",
+            "lbl_draw": "Draw",
+            "lbl_image": "Image",
+            "lbl_sign": "Sign",
+            "lbl_eraser": "Eraser",
+            "lbl_zoom_in": "Zoom+",
+            "lbl_zoom_out": "Zoom-",
+            "lbl_zoom_fit_width": "Width",
+            "lbl_zoom_fit_page": "Page",
+            "lbl_read_mode": "Read",
+            "lbl_avro": "Avro",
 
             # Properties panel
             "properties": "Properties",
@@ -144,6 +171,11 @@ class I18n(QObject):
             "no_directory": "No Directory Selected",
             "confirm_delete_page": "Are you sure you want to delete this page?",
             "confirm_unsaved_changes": "You have unsaved changes. Do you want to save before closing?",
+            "overwrite_warning_title": "Warning: Overwrite Original PDF",
+            "overwrite_warning_text": "Saving will overwrite the original PDF file:\n{filename}",
+            "overwrite_warning_info": "Path: {path}\n\nDo you want to overwrite the original file, or save as a new copy?",
+            "btn_overwrite": "Overwrite Original",
+            "btn_save_as": "Save As...",
 
             # Status bar
             "status_page_info": "Page: {current} / {total}",
@@ -156,11 +188,11 @@ class I18n(QObject):
 
         Language.BANGLA: {
             # Application
-            "app_title": "পিডিএফ সম্পাদক (বাংলা সমর্থিত)",
+            "app_title": "রুহি পিডিএফ এডিটর (RuhiPdf Editor)",
             "untitled": "শিরোনামহীন",
             "version": "সংস্করণ {ver}",
             "ready": "প্রস্তুত",
-            "about": "পিডিএফ সম্পাদক পরিচিতি",
+            "about": "রুহি পিডিএফ এডিটর পরিচিতি",
             "about_description": "হার্ফবাজ সমর্থিত সঠিক বাংলাযুক্ত সহজ, সম্পূর্ণ অফলাইন ডেস্কটপ পিডিএফ সম্পাদক।",
             "credits": "কৃতজ্ঞতা",
             "font": "ফন্ট",
@@ -180,6 +212,7 @@ class I18n(QObject):
             "open_file": "পিডিএফ খুলুন",
             "save_file": "সংরক্ষণ",
             "save_as": "নতুন নামে সংরক্ষণ...",
+            "close_file": "পিডিএফ বন্ধ করুন",
             "export_as_image": "ছবি হিসেবে রপ্তানি...",
             "close": "বন্ধ করুন",
             "exit": "প্রস্থান",
@@ -216,6 +249,32 @@ class I18n(QObject):
             "tool_signature": "স্বাক্ষর সংযুক্ত করুন",
             "tool_eraser": "লেখা মুছে ফেলা / ইরেজার (E)",
             "tool_redact": "লেখা ঢেকে প্রতিস্থাপন",
+
+            # Toolbar single-word button labels (concise, 10px)
+            "lbl_open": "খুলুন",
+            "lbl_save": "সংরক্ষণ",
+            "lbl_close": "বন্ধ",
+            "lbl_undo": "পূর্বাবস্থা",
+            "lbl_redo": "পুনরাবৃত্তি",
+            "lbl_delete": "মুছুন",
+            "lbl_select": "নির্বাচন",
+            "lbl_text": "টেক্সট",
+            "lbl_highlight": "হাইলাইট",
+            "lbl_underline": "আন্ডারলাইন",
+            "lbl_strike": "স্ট্রাইক",
+            "lbl_rect": "আয়তক্ষেত্র",
+            "lbl_line": "লাইন",
+            "lbl_arrow": "তীর",
+            "lbl_draw": "আঁকুন",
+            "lbl_image": "ছবি",
+            "lbl_sign": "স্বাক্ষর",
+            "lbl_eraser": "ইরেজার",
+            "lbl_zoom_in": "জুম+",
+            "lbl_zoom_out": "জুম-",
+            "lbl_zoom_fit_width": "প্রস্থ",
+            "lbl_zoom_fit_page": "পৃষ্ঠা",
+            "lbl_read_mode": "পঠন",
+            "lbl_avro": "অভ্র",
 
             # Properties panel
             "properties": "বৈশিষ্ট্যাবলী",
@@ -271,6 +330,11 @@ class I18n(QObject):
             "no_directory": "কোনো ফোল্ডার নির্বাচিত হয়নি",
             "confirm_delete_page": "আপনি কি নিশ্চিত এই পৃষ্ঠাটি মুছে ফেলতে চান?",
             "confirm_unsaved_changes": "অসংরক্ষিত পরিবর্তন রয়েছে। বন্ধ করার আগে কি সংরক্ষণ করতে চান?",
+            "overwrite_warning_title": "সতর্কতা: মূল পিডিএফ প্রতিস্থাপন",
+            "overwrite_warning_text": "সংরক্ষণ করলে মূল পিডিএফ ফাইলটি প্রতিস্থাপিত (ওভাররাইট) হয়ে যাবে:\n{filename}",
+            "overwrite_warning_info": "পাথ: {path}\n\nআপনি কি মূল ফাইলটি প্রতিস্থাপন করতে চান, নাকি নতুন কপি হিসেবে সংরক্ষণ করতে চান?",
+            "btn_overwrite": "মূল ফাইল প্রতিস্থাপন (Overwrite)",
+            "btn_save_as": "নতুন নামে সংরক্ষণ (Save As)...",
 
             # Status bar
             "status_page_info": "পৃষ্ঠা: {current} / {total}",

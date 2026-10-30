@@ -6,6 +6,7 @@ live properties synchronization, vector zoom supersampling, and icons.
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 # Add project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import QApplication
 from core.annotations import TextBoxData
 from core.pdf_engine import PdfEngine, TextBlock
 from ui.i18n import I18n
-from ui.pdf_view import PdfPageItem, PdfTextBlockSelectionItem, PdfView, TextBoxItem
+from ui.pdf_view import InlineCanvasTextEditor, PdfPageItem, PdfTextBlockSelectionItem, PdfView, TextBoxItem
 from ui.toolbar import Tool, get_icon, _TOOL_DEFS
 
 
@@ -176,7 +177,8 @@ class TestInteractiveEditing(unittest.TestCase):
 
     def test_all_svg_icons_valid(self):
         """Verify all toolbar and property SVG icons load and render valid pixmaps."""
-        for tool, svg_name, fallback, key in _TOOL_DEFS:
+        for def_tuple in _TOOL_DEFS:
+            svg_name = def_tuple[1]
             icon = get_icon(svg_name)
             self.assertFalse(icon.isNull(), f"Icon {svg_name} is null")
             pm = icon.pixmap(24, 24)
@@ -418,20 +420,28 @@ class TestInteractiveEditing(unittest.TestCase):
         """Verify opening a document defaults to fit-to-width, with actual size, fit page and fit height support."""
         self.view.load_document(self.engine)
         # Default zoom mode is fit to width
+        self.assertEqual(self.view._fit_mode, "width")
         self.assertGreater(self.view._zoom, 0.2)
         self.assertTrue(self.view.alignment() & Qt.AlignmentFlag.AlignHCenter)
         self.assertTrue(self.view.alignment() & Qt.AlignmentFlag.AlignTop)
 
-        # Actual size sets zoom to 1.0 (100%)
+        # Actual size sets zoom to 1.0 (100%) and switches to manual mode
         self.view.zoom_actual_size()
         self.assertEqual(self.view._zoom, 1.0)
+        self.assertEqual(self.view._fit_mode, "manual")
 
         # Test fit to height and fit to page
         self.view.zoom_fit_height()
+        self.assertEqual(self.view._fit_mode, "height")
         self.assertGreater(self.view._zoom, 0.2)
 
         self.view.zoom_fit_page()
+        self.assertEqual(self.view._fit_mode, "page")
         self.assertGreater(self.view._zoom, 0.2)
+
+        # Zoom fit width restores fit mode to width
+        self.view.zoom_fit_width()
+        self.assertEqual(self.view._fit_mode, "width")
 
         # Check scene rect and page centering
         page_item = self.view._page_items[0]
@@ -526,6 +536,662 @@ class TestInteractiveEditing(unittest.TestCase):
         win._view.keyPressEvent(redo_ev)
 
         win.close()
+
+    def test_fonts_nikosh_solaimanlipi_kalpurush_available(self):
+        """Verify Nikosh, SolaimanLipi, and Kalpurush font files are present and registered."""
+        import os
+        fonts_dir = Path(__file__).parent.parent / "fonts"
+        self.assertTrue((fonts_dir / "Nikosh.ttf").exists(), "Nikosh.ttf must exist")
+        self.assertTrue((fonts_dir / "SolaimanLipi.ttf").exists(), "SolaimanLipi.ttf must exist")
+        self.assertTrue((fonts_dir / "Kalpurush.ttf").exists(), "Kalpurush.ttf must exist")
+
+        families = self.engine.text_renderer.get_font_families()
+        self.assertIn("Nikosh", families)
+        self.assertIn("SolaimanLipi", families)
+        self.assertIn("Kalpurush", families)
+
+    def test_system_font_option_in_properties_panel(self):
+        """Verify system font button and font selection in PropertiesPanel."""
+        from ui.properties_panel import PropertiesPanel
+        prop = PropertiesPanel(self.i18n)
+        self.assertTrue(hasattr(prop._text_panel, "btn_system_font"))
+        self.assertEqual(prop._text_panel.btn_system_font.objectName(), "SystemFontBtn")
+
+        # Test set_font_families populates bundled and system fonts
+        bundled = ["Noto Sans Bengali", "Kalpurush", "SolaimanLipi", "Nikosh", "Noto Sans"]
+        prop.set_font_families(bundled)
+        combo_items = [prop._text_panel.font_combo.itemText(i) for i in range(prop._text_panel.font_combo.count())]
+        for b in bundled:
+            self.assertIn(b, combo_items)
+        # Should also include system fonts (e.g., Arial)
+        self.assertIn("Arial", combo_items)
+
+        # Test show_text_properties with custom/system font adds it to combo if not present
+        tb_data = TextBoxData(
+            id="sys-font-box",
+            page_index=0,
+            rect=(10, 10, 50, 30),
+            text="Hello System",
+            font_family="Georgia",
+            font_size=18.0,
+            bold=True,
+            italic=True,
+            color="#dc2626",
+        )
+        prop.show_text_properties(tb_data)
+        self.assertEqual(prop._text_panel.font_combo.currentText(), "Georgia")
+        self.assertEqual(prop._text_panel.font_size_spin.value(), 18)
+        self.assertTrue(prop._text_panel.bold_btn.isChecked())
+        self.assertTrue(prop._text_panel.italic_btn.isChecked())
+        self.assertEqual(prop._text_panel.color_btn.color.lower(), "#dc2626")
+
+    def test_auto_detect_font_features_from_pdf(self):
+        """Verify get_text_blocks auto-detects font name, size, bold, italic, and color from PDF spans."""
+        # Create a document and insert text with known font properties
+        doc = self.engine.document
+        page = doc[0]
+        # Insert a red text word
+        page.insert_text(
+            (72, 100),
+            "ReportTitle",
+            fontname="helv",
+            fontsize=20.0,
+            color=(1.0, 0.0, 0.0),
+        )
+
+        blocks = self.engine.get_text_blocks(0, level="word")
+        found = None
+        for b in blocks:
+            if "ReportTitle" in b.text:
+                found = b
+                break
+
+        self.assertIsNotNone(found, "Word 'ReportTitle' should be detected")
+        self.assertEqual(found.font_name, "Arial")  # Helv maps to Arial
+        self.assertAlmostEqual(found.font_size, 20.0, delta=1.0)
+        self.assertEqual(found.color.lower(), "#ff0000")
+
+    def test_inline_editing_for_english(self):
+        """Verify inline editor component behavior and direct inline canvas trigger."""
+        from ui.pdf_view import InlineCanvasTextEditor
+        editor = InlineCanvasTextEditor("InitialWord")
+        self.assertEqual(editor.text(), "InitialWord")
+        self.assertTrue(editor.property("no_bangla_filter"))
+
+        # Test width expansion
+        initial_w = editor.width()
+        editor.setText("A very long sentence to test dynamic width expansion")
+        editor._adjust_width(editor.text())
+        self.assertGreater(editor.width(), initial_w)
+
+        # Test commit signal
+        committed_text = []
+        editor.committed.connect(lambda t: committed_text.append(t))
+        editor.commit()
+        self.assertEqual(committed_text, ["A very long sentence to test dynamic width expansion"])
+
+        # Test direct inline editing trigger on PdfView
+        block = TextBlock(
+            page_index=0,
+            rect=(50.0, 50.0, 150.0, 75.0),
+            text="EnglishWord",
+            font_name="Arial",
+            font_size=16.0,
+            bold=True,
+            italic=False,
+            color="#0284c7",
+        )
+        self.view._start_inline_editing_block(0, block)
+        proxies = [it for it in self.view._scene.items() if hasattr(it, "widget") and isinstance(it.widget(), InlineCanvasTextEditor)]
+        self.assertGreaterEqual(len(proxies), 1)
+
+        # Commit edit
+        inline_ed = proxies[0].widget()
+        inline_ed.setText("UpdatedWord")
+        inline_ed.commit()
+
+        # Check proxy removed after commit
+        self.assertIsNone(proxies[0].scene())
+
+    def test_double_click_english_and_bangla_opens_text_edit_dialog(self):
+        """Verify that double clicking an English or Bangla word opens the text edit window (MultiLineTextDialog)."""
+        from unittest.mock import patch, MagicMock
+        from ui.dialogs import MultiLineTextDialog
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtCore import QEvent, QPoint
+
+        # Mock engine text block at (100, 100, 180, 120)
+        eng_block = TextBlock(
+            page_index=0,
+            rect=(100.0, 100.0, 180.0, 120.0),
+            text="EnglishText",
+            font_name="Arial",
+            font_size=14.0,
+            bold=True,
+            italic=False,
+            color="#ff0000",
+        )
+        self.engine.get_text_blocks = MagicMock(return_value=[eng_block])
+
+        # Test double clicking English word opens MultiLineTextDialog
+        with patch('ui.pdf_view.MultiLineTextDialog') as mock_dlg_cls:
+            mock_dlg = MagicMock()
+            mock_dlg.exec.return_value = True
+            mock_dlg.get_text.return_value = "ReplacementEnglish"
+            mock_dlg_cls.return_value = mock_dlg
+
+            # Position mouse inside the word rect on page 0
+            page_item = self.view._page_items[0]
+            scene_pos = page_item.pos() + QPointF(110.0, 110.0)
+            view_pos = self.view.mapFromScene(scene_pos)
+
+            dbl_ev = QMouseEvent(
+                QEvent.Type.MouseButtonDblClick,
+                QPointF(view_pos),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            self.view.mouseDoubleClickEvent(dbl_ev)
+
+            mock_dlg_cls.assert_called_once()
+            call_kwargs = mock_dlg_cls.call_args.kwargs
+            self.assertEqual(call_kwargs.get("initial_text"), "EnglishText")
+
+        # Verify properties panel was synced to auto-detected font features
+        self.assertEqual(self.view.current_properties["font_size"], 14.0)
+        self.assertEqual(self.view.current_properties["bold"], True)
+        self.assertEqual(self.view.current_properties["color"], "#ff0000")
+
+    def test_arrow_key_positioning(self):
+        """Verify positioning text boxes with arrow keys (1 pt fine, 10 pt coarse with Shift)."""
+        data = TextBoxData(
+            id="nudge-box",
+            page_index=0,
+            rect=(100.0, 100.0, 160.0, 120.0),
+            text="Position Me",
+        )
+        page_item = self.view._page_items[0]
+        item = self.view._add_text_box_item(data, page_item)
+        self.view._scene.clearSelection()
+        item.setSelected(True)
+        item.setFocus()
+
+        orig_pos = item.pos()
+
+        # Press Right Arrow (1 pt nudge)
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        right_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier)
+        item.keyPressEvent(right_ev)
+        self.assertEqual(item.pos().x(), orig_pos.x() + 1.0)
+        self.assertEqual(item.pos().y(), orig_pos.y())
+
+        # Press Down Arrow with Shift (10 pt nudge)
+        down_shift_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+        item.keyPressEvent(down_shift_ev)
+        self.assertEqual(item.pos().y(), orig_pos.y() + 10.0)
+
+        # Also test via PdfView.keyPressEvent
+        up_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.NoModifier)
+        self.view.keyPressEvent(up_ev)
+        self.assertEqual(item.pos().y(), orig_pos.y() + 9.0)
+
+        # Test Backspace key on focused TextBoxItem deletes it
+        del_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backspace, Qt.KeyboardModifier.NoModifier)
+        item.keyPressEvent(del_ev)
+        self.assertNotIn("nudge-box", self.view._overlay_items)
+
+    def test_backspace_inline_deletes_word(self):
+        """Verify that backspacing text to empty in inline editor or dialog erases/deletes the word."""
+        from ui.pdf_view import InlineCanvasTextEditor
+        from unittest.mock import patch
+        from ui.dialogs import MultiLineTextDialog
+
+        block = TextBlock(
+            page_index=0,
+            rect=(50.0, 80.0, 120.0, 100.0),
+            text="WordToDelete",
+            font_name="Arial",
+            font_size=12.0,
+            bold=False,
+            italic=False,
+            color="#000000",
+        )
+        # Test inline editor clearing deletes word
+        self.view._start_inline_editing_block(0, block)
+        proxies = [it for it in self.view._scene.items() if hasattr(it, "widget") and isinstance(it.widget(), InlineCanvasTextEditor)]
+        self.assertEqual(len(proxies), 1)
+        editor = proxies[0].widget()
+        editor.setText("")
+        editor.commit()
+        self.assertIsNone(proxies[0].scene())
+
+        # Test MultiLineTextDialog clearing deletes word via _redact_and_replace_block
+        with patch.object(MultiLineTextDialog, 'exec', return_value=True):
+            with patch.object(MultiLineTextDialog, 'get_text', return_value=""):
+                with patch.object(self.view, '_erase_text_block') as mock_erase:
+                    self.view._redact_and_replace_block(0, block)
+                    mock_erase.assert_called_once_with(0, block)
+
+    def test_original_font_size_applied_consistently(self):
+        """Verify replacement text retains original font size (e.g. 10.5 pt) for consistency."""
+        from unittest.mock import patch
+        from ui.dialogs import MultiLineTextDialog
+        from ui.pdf_view import InlineCanvasTextEditor
+
+        block = TextBlock(
+            page_index=0,
+            rect=(50.0, 80.0, 120.0, 100.0),
+            text="ConsistentSize",
+            font_name="Times New Roman",
+            font_size=10.5,
+            bold=True,
+            italic=False,
+            color="#000000",
+        )
+        # Even if current_properties font_size is set to 24.0:
+        self.view.current_properties["font_size"] = 24.0
+
+        # Verify inline editor maintains 10.5 pt
+        self.view._start_inline_editing_block(0, block)
+        proxies = [it for it in self.view._scene.items() if hasattr(it, "widget") and isinstance(it.widget(), InlineCanvasTextEditor)]
+        self.assertEqual(len(proxies), 1)
+        editor = proxies[0].widget()
+        self.assertEqual(editor.point_size, 10.5)
+        editor.setText("ReplacedConsistent")
+        editor.commit()
+
+        # Verify _redact_and_replace_block with dialog retains 10.5 pt
+        with patch.object(MultiLineTextDialog, 'exec', return_value=True):
+            with patch.object(MultiLineTextDialog, 'get_text', return_value="DialogReplaced"):
+                with patch.object(self.engine, 'redact_area') as mock_redact:
+                    self.view._redact_and_replace_block(0, block)
+                    mock_redact.assert_called_once()
+                    call_kwargs = mock_redact.call_args.kwargs
+                    self.assertEqual(call_kwargs.get("font_size"), 10.5)
+                    self.assertEqual(call_kwargs.get("font_family"), "Times New Roman")
+                    self.assertEqual(call_kwargs.get("bold"), True)
+
+    def test_welcome_screen_and_recent_files_history(self):
+        """Verify WelcomeScreen, DragDropZone, and RecentFilesManager capping at 10 items."""
+        from ui.welcome_screen import RecentFilesManager, WelcomeScreen
+
+        # Clear existing history
+        RecentFilesManager.clear_recent_files()
+        self.assertEqual(RecentFilesManager.get_recent_files(), [])
+
+        # Add 12 files to verify maximum cap of 10
+        for i in range(12):
+            RecentFilesManager.add_recent_file(f"C:/fake_path/file_{i}.pdf")
+
+        recent = RecentFilesManager.get_recent_files()
+        self.assertEqual(len(recent), 10)
+        # Most recent should be file_11
+        self.assertIn("file_11.pdf", recent[0]["name"])
+
+        # Test WelcomeScreen UI rendering
+        welcome = WelcomeScreen(self.i18n)
+        self.assertEqual(welcome.recent_container.count(), 10)
+
+        # Test file selected signal
+        from unittest.mock import patch
+        selected_paths = []
+        welcome.file_selected.connect(lambda p: selected_paths.append(p))
+        with patch("ui.welcome_screen.QMessageBox.warning") as mock_warn:
+            welcome._on_file_chosen("C:/fake_path/file_11.pdf")
+            mock_warn.assert_called_once()
+        # Since it doesn't exist on disk, it pops a warning and removes it
+        self.assertEqual(len(RecentFilesManager.get_recent_files()), 9)
+
+        # Test clear
+        RecentFilesManager.clear_recent_files()
+        self.assertEqual(len(RecentFilesManager.get_recent_files()), 0)
+
+    def test_toolbar_icon_labels_and_close_button(self):
+        """Verify that toolbar buttons have single-word text labels under icons, compact font size, and functional Close."""
+        from ui.toolbar import EditorToolBar, Tool
+        toolbar = EditorToolBar(self.i18n)
+        self.assertEqual(toolbar.toolButtonStyle(), Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+
+        # Check Close action exists and has single-word label "Close"
+        self.assertTrue(hasattr(toolbar, "_close_action"))
+        self.assertEqual(toolbar._close_action.text(), "Close")
+        self.assertNotIn(" ", toolbar._close_action.text().strip())
+
+        # Check all tools have single-word, non-empty text labels
+        for tool, action in toolbar._tool_actions.items():
+            self.assertTrue(bool(action.text()), f"Tool {tool} must have a label")
+            self.assertNotIn(" ", action.text().strip(), f"Tool {tool} label '{action.text()}' must be a single word")
+
+        # Check all file, zoom, and mode actions also have single-word labels
+        all_actions = [
+            toolbar._open_action,
+            toolbar._save_action,
+            toolbar._close_action,
+            toolbar._undo_action,
+            toolbar._redo_action,
+            toolbar._delete_action,
+            toolbar._zoom_in_action,
+            toolbar._zoom_out_action,
+            toolbar._zoom_fit_action,
+            toolbar._zoom_page_action,
+            toolbar._read_mode_action,
+            toolbar._bangla_action,
+        ]
+        for action in all_actions:
+            self.assertNotIn(" ", action.text().strip(), f"Action label '{action.text()}' must be a single word")
+
+        # Verify stylesheet sets compact 10px font size
+        self.assertIn("10px", toolbar.styleSheet())
+
+        # Signal check
+        close_emitted = []
+        toolbar.close_requested.connect(lambda: close_emitted.append(True))
+        toolbar._close_action.trigger()
+        self.assertEqual(close_emitted, [True])
+
+    def test_zero_shift_and_selection_cleanup_on_cancel_and_ok(self):
+        """Verify that closing redact/replace dialog on Cancel or OK clears selection and preserves scroll."""
+        from unittest.mock import patch
+        from ui.dialogs import MultiLineTextDialog
+
+        block = TextBlock(
+            page_index=0,
+            rect=(60.0, 60.0, 140.0, 80.0),
+            text="ShiftTestWord",
+            font_name="Arial",
+            font_size=12.0,
+            bold=False,
+            italic=False,
+            color="#000000",
+        )
+        # Set scrollbar to a valid position within its range
+        self.view.horizontalScrollBar().setValue(min(20, self.view.horizontalScrollBar().maximum()))
+        self.view.verticalScrollBar().setValue(min(50, self.view.verticalScrollBar().maximum()))
+        orig_h = self.view.horizontalScrollBar().value()
+        orig_v = self.view.verticalScrollBar().value()
+
+        # Test Cancel: dlg.exec() returns False
+        with patch.object(MultiLineTextDialog, 'exec', return_value=False):
+            self.view._redact_and_replace_block(0, block)
+
+        # Selection item must be cleaned up on Cancel
+        self.assertIsNone(self.view._current_text_selection)
+        # Scrollbars must not shift
+        self.assertEqual(self.view.horizontalScrollBar().value(), orig_h)
+        self.assertEqual(self.view.verticalScrollBar().value(), orig_v)
+
+    def test_save_overwrite_warning_dialog(self):
+        """Verify warning dialog when clicking Save on an existing PDF to prevent accidental overwrite."""
+        from ui.main_window import MainWindow
+        from unittest.mock import patch, MagicMock
+
+        win = MainWindow()
+        win._engine._file_path = "C:/test_docs/report.pdf"
+        win._engine.save = MagicMock()
+        win._is_modified = True
+
+        # Case 1: User cancels -> do not overwrite, remains modified
+        with patch("ui.main_window.QMessageBox") as mock_box_cls:
+            mock_box = MagicMock()
+            btn_overwrite = MagicMock()
+            btn_save_as = MagicMock()
+            btn_cancel = MagicMock()
+            mock_box.addButton.side_effect = [btn_overwrite, btn_save_as, btn_cancel]
+            mock_box.clickedButton.return_value = btn_cancel
+            mock_box_cls.return_value = mock_box
+
+            result = win.action_save()
+            self.assertFalse(result)
+            win._engine.save.assert_not_called()
+            self.assertTrue(win._is_modified)
+
+        # Case 2: User confirms overwrite -> saves to original file, modified cleared
+        with patch("ui.main_window.QMessageBox") as mock_box_cls:
+            mock_box = MagicMock()
+            mock_box.addButton.side_effect = [btn_overwrite, btn_save_as, btn_cancel]
+            mock_box.clickedButton.return_value = btn_overwrite
+            mock_box_cls.return_value = mock_box
+
+            result = win.action_save()
+            self.assertTrue(result)
+            win._engine.save.assert_called_once()
+            self.assertFalse(win._is_modified)
+
+        # Case 3: User chooses Save As -> redirects to action_save_as
+        win._is_modified = True
+        with patch("ui.main_window.QMessageBox") as mock_box_cls:
+            mock_box = MagicMock()
+            mock_box.addButton.side_effect = [btn_overwrite, btn_save_as, btn_cancel]
+            mock_box.clickedButton.return_value = btn_save_as
+            mock_box_cls.return_value = mock_box
+
+            with patch.object(win, "action_save_as", return_value=True) as mock_save_as:
+                result = win.action_save()
+                self.assertTrue(result)
+                mock_save_as.assert_called_once()
+
+        # Case 4: Calling from QAction.triggered(False) still triggers warning (not bypassed by boolean arg)
+        with patch("ui.main_window.QMessageBox") as mock_box_cls:
+            mock_box = MagicMock()
+            mock_box.addButton.side_effect = [btn_overwrite, btn_save_as, btn_cancel]
+            mock_box.clickedButton.return_value = btn_cancel
+            mock_box_cls.return_value = mock_box
+
+            # Simulates Qt QAction triggered signal passing False
+            result = win.action_save(False)
+            self.assertFalse(result)
+            mock_box.exec.assert_called_once()
+
+    def test_double_click_english_word_detected_properties_preserved(self):
+        """Verify double clicking English word opens dialog and retains detected features if not edited, or uses edited."""
+        from unittest.mock import patch, MagicMock
+        from ui.dialogs import MultiLineTextDialog
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QMouseEvent
+
+        eng_block = TextBlock(
+            page_index=0,
+            rect=(120.0, 150.0, 200.0, 170.0),
+            text="OriginalEnglish",
+            font_name="Calibri",
+            font_size=16.5,
+            bold=True,
+            italic=False,
+            color="#2563eb",
+        )
+        self.engine.get_text_blocks = MagicMock(return_value=[eng_block])
+
+        # Test double clicking near the word opens dialog
+        page_item = self.view._page_items[0]
+        scene_pos = page_item.pos() + QPointF(125.0, 155.0)
+        view_pos = self.view.mapFromScene(scene_pos)
+
+        dbl_ev = QMouseEvent(
+            QEvent.Type.MouseButtonDblClick,
+            QPointF(view_pos),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+        with patch("ui.pdf_view.MultiLineTextDialog") as mock_dlg_cls:
+            mock_dlg = MagicMock()
+            mock_dlg.exec.return_value = True
+            mock_dlg.get_text.return_value = "ReplacementEnglish"
+            mock_dlg_cls.return_value = mock_dlg
+
+            with patch.object(self.engine, "redact_area") as mock_redact:
+                self.view.mouseDoubleClickEvent(dbl_ev)
+                mock_dlg_cls.assert_called_once()
+                self.assertEqual(mock_dlg_cls.call_args.kwargs.get("initial_text"), "OriginalEnglish")
+
+                # Verify properties were auto-detected and preserved without user modification
+                mock_redact.assert_called_once()
+                kwargs = mock_redact.call_args.kwargs
+                self.assertEqual(kwargs.get("font_family"), "Calibri")
+                self.assertEqual(kwargs.get("font_size"), 16.5)
+                self.assertEqual(kwargs.get("color"), "#2563eb")
+                self.assertEqual(kwargs.get("bold"), True)
+
+    def test_bangla_word_extraction_merges_fragments(self):
+        """Verify engine.get_text_blocks merges fragmented complex script words into whole words."""
+        import tempfile
+        import pymupdf
+        from core.text_renderer import TextRenderer
+
+        # Create a document with complex Bangla text
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = Path(tmpdir) / "bangla_merge_test.pdf"
+            doc = pymupdf.open()
+            page = doc.new_page(width=595, height=842)
+            renderer = TextRenderer()
+            renderer.insert_text_to_page(
+                page,
+                (50, 50, 300, 100),
+                "বাংলাদেশ আমি",
+                font_family="Noto Sans Bengali",
+                font_size=14.0,
+            )
+            doc.save(str(pdf_path))
+            doc.close()
+
+            eng = PdfEngine()
+            eng.open(str(pdf_path))
+            blocks = eng.get_text_blocks(0, level="word")
+            extracted_words = [b.text for b in blocks]
+            eng.close()
+
+            # "বাংলাদেশ" must be a single merged whole word, not "বাংলাদ" and "েশ"
+            self.assertTrue(any("বাংলাদেশ" in w for w in extracted_words), f"Extracted: {extracted_words}")
+            self.assertTrue(any("আমি" in w for w in extracted_words), f"Extracted: {extracted_words}")
+
+    def test_add_text_when_bangla_enabled_opens_editing_dialog(self):
+        """When Bangla mode is enabled and user adds text with Tool.TEXT, open MultiLineTextDialog."""
+        from core.bangla_input import BanglaPhoneticEngine
+        from ui.dialogs import MultiLineTextDialog
+
+        b_engine = BanglaPhoneticEngine()
+        self.assertFalse(b_engine.is_active)
+        self.assertFalse(b_engine.avro_phonetic_enabled)
+
+        b_engine.set_active(True)
+        self.assertTrue(b_engine.is_active)
+        self.assertTrue(b_engine.avro_phonetic_enabled)
+
+        # 1. Test MultiLineTextDialog with initial_bangla_mode=True
+        dlg = MultiLineTextDialog(
+            parent=None,
+            title="Add Text",
+            initial_text="",
+            bangla_engine=b_engine,
+            initial_bangla_mode=True,
+        )
+        self.assertIsNotNone(dlg._bangla_cb)
+        self.assertTrue(dlg._bangla_cb.isChecked())
+        self.assertFalse(dlg.preview_card.isHidden())
+
+        # Simulate typing phonetic English 'amra shobai raja'
+        dlg.text_edit.setPlainText("amra shobai raja")
+        self.assertIn("আমরা সবাই রাজা", dlg.preview_label.text())
+        self.assertEqual(dlg.get_text(), "আমরা সবাই রাজা")
+        dlg.close()
+
+        # 2. Test PdfView adding text when Bangla is enabled vs disabled
+        view = PdfView()
+        view.set_dependencies(self.engine, b_engine, None)
+        view.load_document(self.engine)
+
+        page_item = view._page_items[0]
+        local_pt = QPointF(100.0, 150.0)
+
+        # When Bangla is enabled: opens MultiLineTextDialog
+        b_engine.set_active(True)
+        with patch("ui.pdf_view.MultiLineTextDialog") as mock_dlg_cls:
+            mock_dlg = MagicMock()
+            mock_dlg.exec.return_value = True
+            mock_dlg.get_text.return_value = "আমরা সবাই রাজা"
+            mock_dlg_cls.return_value = mock_dlg
+
+            view.set_tool(Tool.TEXT)
+            view._create_inline_text_dialog(0, page_item, local_pt)
+
+            mock_dlg_cls.assert_called_once()
+            _, kwargs = mock_dlg_cls.call_args
+            self.assertTrue(kwargs.get("initial_bangla_mode"))
+
+            # Check that text box was created with Bangla text and Bangla font
+            added_item = list(view._overlay_items.values())[-1]
+            self.assertEqual(added_item.data.text, "আমরা সবাই রাজা")
+            self.assertEqual(added_item.data.font_family, "Noto Sans Bengali")
+            self.assertEqual(view._current_tool, Tool.SELECT)
+
+        # When Bangla is disabled: calls _start_inline_create_text (no dialog)
+        b_engine.set_active(False)
+        with patch.object(view, "_start_inline_create_text") as mock_inline:
+            with patch("ui.pdf_view.MultiLineTextDialog") as mock_dlg_cls:
+                view.set_tool(Tool.TEXT)
+                view._create_inline_text_dialog(0, page_item, local_pt)
+                mock_inline.assert_called_once_with(0, page_item, local_pt)
+                mock_dlg_cls.assert_not_called()
+
+    def test_inline_english_backspace_and_avro_dialog_typing(self):
+        """Verify backspace works in English inline text editor and Avro dialog allows full typing."""
+        from core.bangla_input import BanglaPhoneticEngine
+        from ui.dialogs import MultiLineTextDialog
+        from PySide6.QtGui import QKeyEvent
+        from PySide6.QtCore import QEvent
+
+        # 1. Test Backspace in English inline text editor via view.keyPressEvent
+        view = PdfView()
+        view.set_dependencies(self.engine, None, None)
+        view.load_document(self.engine)
+        page_item = view._page_items[0]
+
+        view._start_inline_create_text(0, page_item, QPointF(50.0, 50.0))
+        proxies = [it for it in view._scene.items() if hasattr(it, "widget") and isinstance(it.widget(), InlineCanvasTextEditor)]
+        self.assertEqual(len(proxies), 1)
+        editor = proxies[0].widget()
+        editor.setText("Hello")
+        editor.setCursorPosition(5)
+
+        # Send Backspace key event to view
+        bs_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backspace, Qt.KeyboardModifier.NoModifier)
+        view.keyPressEvent(bs_ev)
+        self.assertEqual(editor.text(), "Hell")
+
+        bs_ev2 = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Backspace, Qt.KeyboardModifier.NoModifier)
+        view.keyPressEvent(bs_ev2)
+        self.assertEqual(editor.text(), "Hel")
+
+        # 2. Test Avro dialog typing when Bangla engine is active
+        b_engine = BanglaPhoneticEngine()
+        b_engine.set_active(True)
+        self.app.installEventFilter(b_engine)
+
+        dlg = MultiLineTextDialog(title="Add Text", initial_text="", bangla_engine=b_engine, initial_bangla_mode=True)
+        dlg.show()
+        self.app.processEvents()
+
+        # Check native QWindow events are NOT blocked
+        win_handle = dlg.windowHandle()
+        if win_handle:
+            key_ev = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier, "a")
+            self.assertFalse(b_engine.eventFilter(win_handle, key_ev))
+
+        # Check typing directly into text_edit
+        self.assertTrue(dlg.text_edit.isEnabled())
+        self.assertFalse(dlg.text_edit.isReadOnly())
+        dlg.text_edit.setPlainText("bangla")
+        self.assertEqual(dlg.preview_label.text(), "বাংলা")
+        self.assertEqual(dlg.get_text(), "বাংলা")
+
+        # Check Backspace in text_edit
+        dlg.text_edit.setPlainText("bangl")
+        self.assertEqual(dlg.get_text(), "বাংল")
+        dlg.close()
 
     def tearDown(self):
         self.engine.close()

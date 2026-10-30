@@ -1,4 +1,4 @@
-import fitz
+import pymupdf as fitz
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 from core.text_renderer import TextRenderer

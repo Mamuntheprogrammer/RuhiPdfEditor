@@ -138,6 +138,9 @@ class ThumbnailPanel(QDockWidget):
         if row is not None:
             self._list.blockSignals(True)
             self._list.setCurrentRow(row)
+            item = self._list.item(row)
+            if item is not None:
+                self._list.scrollToItem(item)
             self._list.blockSignals(False)
 
     def update_translations(self, i18n: I18n) -> None:

@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import stat
+import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
+sys.modules.setdefault("fitz", fitz)
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage, QPixmap
 
@@ -36,12 +41,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TextBlock:
-    """Represents an existing text block found in the PDF."""
+    """Represents an existing text block found in the PDF with auto-detected font features."""
     page_index: int
     rect: tuple[float, float, float, float]  # x0, y0, x1, y1
     text: str
     font_name: str
     font_size: float
+    bold: bool = False
+    italic: bool = False
+    color: str = "#000000"
 
 
 # ===================================================================
@@ -73,6 +81,11 @@ class PdfEngine(QObject):
     def document(self) -> fitz.Document | None:
         """The currently open ``fitz.Document``, or *None*."""
         return self._doc
+
+    @property
+    def is_open(self) -> bool:
+        """Return True if a document is currently open."""
+        return self._doc is not None
 
     @property
     def file_path(self) -> str | None:
@@ -169,6 +182,13 @@ class PdfEngine(QObject):
             finally:
                 export_doc.close()
 
+            # Ensure writable attributes on Windows if target file already exists
+            if target_path.exists():
+                try:
+                    os.chmod(target_path, stat.S_IWRITE | stat.S_IREAD)
+                except Exception:
+                    pass
+
             # Write bytes directly using Python's open() to avoid Windows file-lock permission errors
             with open(target_path, "wb") as f:
                 f.write(saved_bytes)
@@ -263,7 +283,7 @@ class PdfEngine(QObject):
         return (page.rect.width, page.rect.height)
 
     def get_text_blocks(self, page_index: int, level: str = "word") -> list[TextBlock]:
-        """Extract text blocks or individual words from a page.
+        """Extract text blocks or individual words from a page with auto-detected font properties.
 
         Parameters
         ----------
@@ -277,20 +297,161 @@ class PdfEngine(QObject):
         page: fitz.Page = self._doc[page_index]  # type: ignore[index]
         blocks: list[TextBlock] = []
 
+        # Extract spans with full font metadata from page dictionary
+        spans: list[dict] = []
+        try:
+            page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+            for block in page_dict.get("blocks", []):
+                if block.get("type") != 0:
+                    continue  # skip image blocks
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        if span.get("text", "").strip():
+                            spans.append(span)
+        except Exception:
+            logger.exception("get_text('dict') failed on page %d", page_index)
+
+        def _parse_span(span_dict: dict) -> tuple[str, float, bool, bool, str]:
+            font_raw = span_dict.get("font", "")
+            flags = int(span_dict.get("flags", 0))
+            size = float(span_dict.get("size", 12.0))
+            color_int = int(span_dict.get("color", 0))
+
+            # Detect bold & italic from flags and font name
+            is_bold = bool(flags & 16) or ("bold" in font_raw.lower()) or ("black" in font_raw.lower())
+            is_italic = bool(flags & 2) or ("italic" in font_raw.lower()) or ("oblique" in font_raw.lower())
+
+            # Clean font family name: strip subset prefix (e.g. ABCDEF+)
+            clean_name = font_raw
+            if "+" in clean_name:
+                parts = clean_name.split("+", 1)
+                if len(parts[0]) == 6:
+                    clean_name = parts[1]
+
+            # Strip standard font style suffixes
+            for suffix in ("-BoldItalic", "-BoldOblique", "-Bold", "-Italic", "-Oblique", "-Regular", ",Bold", ",Italic", "MT", "PS"):
+                if clean_name.endswith(suffix):
+                    clean_name = clean_name[:-len(suffix)]
+
+            # Map standard PDF font families to clean desktop names
+            fn_lower = clean_name.lower()
+            if "helv" in fn_lower or "arial" in fn_lower:
+                clean_name = "Arial"
+            elif "times" in fn_lower:
+                clean_name = "Times New Roman"
+            elif "courier" in fn_lower:
+                clean_name = "Courier New"
+            elif "calibri" in fn_lower:
+                clean_name = "Calibri"
+            elif "segoe" in fn_lower:
+                clean_name = "Segoe UI"
+            elif "tahoma" in fn_lower:
+                clean_name = "Tahoma"
+
+            # Convert integer color to hex "#RRGGBB"
+            r = (color_int >> 16) & 0xFF
+            g = (color_int >> 8) & 0xFF
+            b = color_int & 0xFF
+            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+
+            return clean_name, size, is_bold, is_italic, hex_color
+
         if level == "word":
             try:
                 words = page.get_text("words")
+                dict_blocks = page_dict.get("blocks", [])
+                raw_extracted: list[dict] = []
                 for w in words:
                     x0, y0, x1, y1, word_text = float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])
                     if not word_text.strip():
                         continue
+
+                    cx = (x0 + x1) / 2.0
+                    cy = (y0 + y1) / 2.0
+                    matched_span = None
+
+                    # 1. Primary lookup: directly index into page_dict using PyMuPDF block & line indices
+                    try:
+                        b_idx = int(w[5])
+                        l_idx = int(w[6])
+                        if b_idx < len(dict_blocks):
+                            lines = dict_blocks[b_idx].get("lines", [])
+                            if l_idx < len(lines):
+                                line_spans = lines[l_idx].get("spans", [])
+                                if len(line_spans) == 1:
+                                    matched_span = line_spans[0]
+                                else:
+                                    for s in line_spans:
+                                        sb = s.get("bbox", (0, 0, 0, 0))
+                                        if (sb[0] - 2.0) <= cx <= (sb[2] + 2.0):
+                                            matched_span = s
+                                            break
+                                    if not matched_span and line_spans:
+                                        matched_span = line_spans[0]
+                    except (IndexError, KeyError, TypeError, ValueError):
+                        pass
+
+                    # 2. Secondary fallback: search across all spans on page
+                    if matched_span is None:
+                        for s in spans:
+                            sb = s.get("bbox", (0, 0, 0, 0))
+                            if (sb[0] - 4.0) <= cx <= (sb[2] + 4.0) and (min(sb[1], y0) <= max(sb[3], y1)):
+                                matched_span = s
+                                break
+
+                    if matched_span:
+                        fn, sz, bld, itl, col = _parse_span(matched_span)
+                    else:
+                        fn, sz, bld, itl, col = ("Arial", max(8.0, y1 - y0), False, False, "#000000")
+
+                    raw_extracted.append({
+                        "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                        "text": word_text,
+                        "fn": fn, "sz": sz, "bld": bld, "itl": itl, "col": col,
+                    })
+
+                # Merge adjacent and overlapping word fragments on the same line (crucial for complex Indic/Bangla vowels and ligatures)
+                merged_items: list[dict] = []
+                for item in raw_extracted:
+                    if not merged_items:
+                        merged_items.append(item)
+                        continue
+
+                    prev = merged_items[-1]
+                    # Check if items are on the same line
+                    h_a = item["y1"] - item["y0"]
+                    h_b = prev["y1"] - prev["y0"]
+                    same_line = abs(item["y0"] - prev["y0"]) <= max(6.0, max(h_a, h_b) * 0.5)
+
+                    # Check if horizontally overlapping or touching without space gap
+                    overlap = (item["x0"] <= prev["x1"] + 1.5) and (prev["x0"] <= item["x1"] + 1.5)
+                    has_bangla = any(0x0980 <= ord(c) <= 0x09FF for c in (prev["text"] + item["text"]))
+
+                    if same_line and (overlap or (has_bangla and item["x0"] <= prev["x1"] + 2.5)):
+                        # Combine bounding box and text
+                        prev["x0"] = min(prev["x0"], item["x0"])
+                        prev["y0"] = min(prev["y0"], item["y0"])
+                        prev["x1"] = max(prev["x1"], item["x1"])
+                        prev["y1"] = max(prev["y1"], item["y1"])
+                        prev["text"] = unicodedata.normalize("NFC", prev["text"] + item["text"])
+                        if prev["fn"] == "Arial" and item["fn"] != "Arial":
+                            prev["fn"] = item["fn"]
+                        if item["sz"] > prev["sz"]:
+                            prev["sz"] = item["sz"]
+                    else:
+                        merged_items.append(item)
+
+                for m in merged_items:
                     blocks.append(
                         TextBlock(
                             page_index=page_index,
-                            rect=(x0, y0, x1, y1),
-                            text=word_text,
-                            font_name="",
-                            font_size=max(8.0, y1 - y0),
+                            rect=(m["x0"], m["y0"], m["x1"], m["y1"]),
+                            text=unicodedata.normalize("NFC", m["text"]),
+                            font_name=m["fn"],
+                            font_size=m["sz"],
+                            bold=m["bld"],
+                            italic=m["itl"],
+                            color=m["col"],
                         )
                     )
             except Exception:
@@ -298,28 +459,24 @@ class PdfEngine(QObject):
 
         # Fallback to spans if words was empty or level == "span"
         if not blocks:
-            try:
-                page_dict = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-                for block in page_dict.get("blocks", []):
-                    if block.get("type") != 0:
-                        continue  # skip image blocks
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            bbox = span.get("bbox", (0, 0, 0, 0))
-                            text = span.get("text", "")
-                            if not text.strip():
-                                continue
-                            blocks.append(
-                                TextBlock(
-                                    page_index=page_index,
-                                    rect=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
-                                    text=text,
-                                    font_name=span.get("font", ""),
-                                    font_size=float(span.get("size", 0.0)),
-                                )
-                            )
-            except Exception:
-                logger.exception("get_text('dict') failed on page %d", page_index)
+            for s in spans:
+                bbox = s.get("bbox", (0, 0, 0, 0))
+                text = s.get("text", "")
+                if not text.strip():
+                    continue
+                fn, sz, bld, itl, col = _parse_span(s)
+                blocks.append(
+                    TextBlock(
+                        page_index=page_index,
+                        rect=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
+                        text=text,
+                        font_name=fn,
+                        font_size=sz,
+                        bold=bld,
+                        italic=itl,
+                        color=col,
+                    )
+                )
 
         return blocks
 
@@ -349,6 +506,8 @@ class PdfEngine(QObject):
                     color=tb.color,
                     bold=tb.bold,
                     italic=tb.italic,
+                    underline=getattr(tb, "underline", False),
+                    strikethrough=getattr(tb, "strikethrough", False),
                 )
 
             # ---- Highlights / underlines / strikethroughs ----
@@ -429,7 +588,15 @@ class PdfEngine(QObject):
                     continue
                 try:
                     r = fitz.Rect(*img.rect)
-                    page.insert_image(r, filename=img.image_path, overlay=True)
+                    opacity = getattr(img, "opacity", 1.0)
+                    if opacity is not None and opacity < 0.999:
+                        img_bytes = _apply_image_opacity(img.image_path, opacity)
+                        if img_bytes:
+                            page.insert_image(r, stream=img_bytes, overlay=True)
+                        else:
+                            page.insert_image(r, filename=img.image_path, overlay=True)
+                    else:
+                        page.insert_image(r, filename=img.image_path, overlay=True)
                 except Exception:
                     logger.exception("Failed to insert image on page %d", page_index)
 
@@ -445,6 +612,10 @@ class PdfEngine(QObject):
         font_family: str = "Noto Sans Bengali",
         font_size: float = 12.0,
         color: str = "#000000",
+        bold: bool = False,
+        italic: bool = False,
+        underline: bool = False,
+        strikethrough: bool = False,
     ) -> None:
         """White-out an area and optionally place replacement text.
 
@@ -469,6 +640,10 @@ class PdfEngine(QObject):
                     font_family=font_family,
                     font_size=font_size,
                     color=color,
+                    bold=bold,
+                    italic=italic,
+                    underline=underline,
+                    strikethrough=strikethrough,
                 )
         except Exception:
             logger.exception("Redaction failed on page %d", page_index)
@@ -542,3 +717,43 @@ def _draw_arrowhead(
     right = fitz.Point(base_x - px * size * 0.4, base_y - py * size * 0.4)
 
     shape.draw_polyline([left, p2, right])
+
+
+def _apply_image_opacity(image_path: str, opacity: float) -> bytes:
+    """Return PNG bytes of the image with the specified opacity applied to its alpha channel."""
+    # Attempt with PIL first
+    try:
+        from PIL import Image
+        import io
+        with Image.open(image_path) as im:
+            rgba = im.convert("RGBA")
+            r, g, b, a = rgba.split()
+            op_clamped = max(0.0, min(1.0, float(opacity)))
+            a = a.point(lambda p: int(round(p * op_clamped)))
+            rgba.putalpha(a)
+            buf = io.BytesIO()
+            rgba.save(buf, format="PNG")
+            return buf.getvalue()
+    except Exception:
+        pass
+
+    # Fallback with QImage / PySide6
+    try:
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtCore import QBuffer, QIODevice, Qt
+        src = QImage(image_path)
+        if not src.isNull():
+            out = QImage(src.size(), QImage.Format.Format_ARGB32_Premultiplied)
+            out.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(out)
+            painter.setOpacity(max(0.0, min(1.0, float(opacity))))
+            painter.drawImage(0, 0, src)
+            painter.end()
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            out.save(buf, "PNG")
+            return bytes(buf.data())
+    except Exception:
+        pass
+
+    return b""

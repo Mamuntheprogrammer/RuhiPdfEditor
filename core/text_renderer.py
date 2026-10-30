@@ -15,7 +15,8 @@ import os
 import sys
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
+sys.modules.setdefault("fitz", fitz)
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import (
     QColor,
@@ -55,6 +56,9 @@ class TextRenderer:
         },
         "SolaimanLipi": {
             "regular": "SolaimanLipi.ttf",
+        },
+        "Nikosh": {
+            "regular": "Nikosh.ttf",
         },
         "Noto Sans": {
             "regular": "NotoSans-Regular.ttf",
@@ -128,6 +132,8 @@ class TextRenderer:
         color: str = "#000000",
         bold: bool = False,
         italic: bool = False,
+        underline: bool = False,
+        strikethrough: bool = False,
     ) -> None:
         """Insert *text* into *page* using ``insert_htmlbox`` for proper shaping.
 
@@ -157,53 +163,65 @@ class TextRenderer:
         variant = _variant_key(bold, italic)
 
         # Resolve the family's available variants
-        family_variants = self.FONT_MAP.get(font_family, {})
-
-        # Fall back gracefully when the exact variant is unavailable
-        chosen_filename = (
-            family_variants.get(variant)
-            or family_variants.get("regular")
-        )
-        if chosen_filename is None:
-            logger.error("No font file found for family '%s'", font_family)
-            return
-
-        # Build @font-face CSS for every variant the family provides
-        font_face_css = self._build_font_face_css(font_family)
+        family_variants = self.FONT_MAP.get(font_family)
+        if family_variants:
+            font_face_css = self._build_font_face_css(font_family)
+            css_family_decl = f"'{font_family}'"
+        else:
+            # System font: PyMuPDF / HarfBuzz resolves it dynamically via the Archive / system fonts
+            font_face_css = ""
+            css_family_decl = f"'{font_family}', sans-serif"
 
         # Build the HTML snippet
         escaped_text = html.escape(text).replace("\n", "<br/>")
         font_weight = "bold" if bold else "normal"
         font_style = "italic" if italic else "normal"
+        decorations = []
+        if underline:
+            decorations.append("underline")
+        if strikethrough:
+            decorations.append("line-through")
+        text_decor_css = f"text-decoration: {' '.join(decorations)}; " if decorations else ""
 
         html_content = (
             f"<html><head><style>\n"
             f"{font_face_css}\n"
-            f"* {{ margin: 0; padding: 0; }}\n"
-            f"body {{ margin: 0; padding: 0; line-height: 1.25; }}\n"
+            f"* {{ margin: 0; padding: 0; box-sizing: border-box; }}\n"
+            f"body {{ margin: 0; padding: 0; line-height: 1.0; }}\n"
+            f"div {{ margin: 0; padding: 0; line-height: 1.0; }}\n"
             f"</style></head><body>\n"
-            f"<div style=\"font-family: '{font_family}'; "
+            f"<div style=\"font-family: {css_family_decl}; "
             f"font-size: {font_size}pt; "
             f"color: {color}; "
             f"font-weight: {font_weight}; "
-            f"font-style: {font_style};\">"
+            f"font-style: {font_style}; "
+            f"{text_decor_css}\">"
             f"{escaped_text}"
             f"</div></body></html>"
         )
 
-        # Create an archive pointing to the fonts directory so that
-        # insert_htmlbox can locate the .ttf files referenced in CSS.
+        # Create an archive combining bundled fonts directory and OS fonts
+        # so that insert_htmlbox can locate bundled .ttf files as well as system fonts.
         try:
-            archive = fitz.Archive(str(self.FONT_DIR))
+            archive = fitz.Archive()
+            if self.FONT_DIR.exists():
+                archive.add(str(self.FONT_DIR))
+            win_fonts = os.path.join(os.environ.get("WINDIR", "C:/Windows"), "Fonts")
+            if os.path.isdir(win_fonts):
+                archive.add(win_fonts)
             x0, y0, r2, r3 = rect
             num_lines = max(1, len(text.splitlines()))
             min_h = max(font_size * num_lines * 1.35 + 4.0, 10.0)
             min_w = max(font_size * 2.0, 20.0)
 
+            # Precise sub-pixel compensation for Story htmlbox 1.0pt margin and font ascender top
+            adj_x0 = x0 - 1.0
+            adj_y0 = y0 + (font_size * 0.19)
+
             if r2 <= x0 or r3 <= y0:
-                target_rect = fitz.Rect(x0, y0, x0 + max(min_w, r2), y0 + max(min_h, r3))
+                target_rect = fitz.Rect(adj_x0, adj_y0, adj_x0 + max(min_w, float(r2 - x0)), adj_y0 + max(min_h, float(r3 - y0)))
             else:
-                target_rect = fitz.Rect(x0, y0, max(r2, x0 + min_w), max(r3, y0 + min_h))
+                target_rect = fitz.Rect(adj_x0, adj_y0, max(r2, adj_x0 + min_w), max(r3, adj_y0 + min_h))
             target_rect.normalize()
 
             page.insert_htmlbox(target_rect, html_content, archive=archive)

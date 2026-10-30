@@ -87,11 +87,12 @@ class ThemeManager:
     QToolButton {
         background: transparent;
         border: 1px solid transparent;
-        border-radius: 6px;
-        padding: 4px;
+        border-radius: 4px;
+        padding: 3px 2px;
+        font-size: 10px;
+        font-weight: 500;
         color: #334155;
         min-width: 32px;
-        min-height: 32px;
     }
     QToolButton:hover {
         background: #f1f5f9;
@@ -167,6 +168,20 @@ class ThemeManager:
         background-color: #0284c7;
         border: 1.5px solid #0284c7;
         color: #ffffff;
+    }
+    QPushButton#SystemFontBtn {
+        background-color: #f1f5f9;
+        border: 1px solid #cbd5e1;
+        border-radius: 5px;
+        color: #0369a1;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+    }
+    QPushButton#SystemFontBtn:hover {
+        background-color: #e0f2fe;
+        border: 1px solid #0284c7;
+        color: #0284c7;
     }
     QPushButton#SizeStepBtn {
         background-color: #f8fafc;
@@ -601,11 +616,12 @@ class ThemeManager:
     QToolButton {
         background: transparent;
         border: 1px solid transparent;
-        border-radius: 6px;
-        padding: 4px;
+        border-radius: 4px;
+        padding: 3px 2px;
+        font-size: 10px;
+        font-weight: 500;
         color: #e2e8f0;
         min-width: 32px;
-        min-height: 32px;
     }
     QToolButton:hover {
         background: #2e2e38;
@@ -679,6 +695,20 @@ class ThemeManager:
         background-color: #0284c7;
         border: 1.5px solid #38bdf8;
         color: #ffffff;
+    }
+    QPushButton#SystemFontBtn {
+        background-color: #2e2e38;
+        border: 1px solid #475569;
+        border-radius: 5px;
+        color: #38bdf8;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+    }
+    QPushButton#SystemFontBtn:hover {
+        background-color: #1e293b;
+        border: 1px solid #38bdf8;
+        color: #7dd3fc;
     }
     QPushButton#SizeStepBtn {
         background-color: #1e1e24;

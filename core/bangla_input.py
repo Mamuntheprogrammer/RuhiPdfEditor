@@ -204,6 +204,14 @@ class BanglaPhoneticEngine(QObject):
     def is_active(self) -> bool:
         return self._active
 
+    @property
+    def avro_phonetic_enabled(self) -> bool:
+        return self._active
+
+    @avro_phonetic_enabled.setter
+    def avro_phonetic_enabled(self, val: bool) -> None:
+        self.set_active(val)
+
     def toggle(self) -> None:
         self.set_active(not self._active)
 
@@ -402,15 +410,47 @@ class BanglaPhoneticEngine(QObject):
         if not self._active:
             return super().eventFilter(watched, event)
 
-        # Allow widgets marked with no_bangla_filter (like MultiLineTextDialog) to receive keys directly
+        if event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(watched, event)
+
+        from PySide6.QtGui import QWindow
+        from PySide6.QtWidgets import QApplication
+
+        # 1. Never intercept top-level native QWindow events so Qt can dispatch them down to widgets
+        if isinstance(watched, QWindow):
+            return False
+
+        # 2. If active modal dialog or active window has no_bangla_filter, bypass completely
+        active_modal = QApplication.activeModalWidget()
+        if active_modal is not None:
+            curr_modal: Optional[QObject] = active_modal
+            while curr_modal is not None:
+                if getattr(curr_modal, "property", None) and curr_modal.property("no_bangla_filter"):
+                    return False
+                curr_modal = curr_modal.parent() if hasattr(curr_modal, "parent") else None
+
+        active_win = QApplication.activeWindow()
+        if active_win is not None:
+            curr_win: Optional[QObject] = active_win
+            while curr_win is not None:
+                if getattr(curr_win, "property", None) and curr_win.property("no_bangla_filter"):
+                    return False
+                curr_win = curr_win.parent() if hasattr(curr_win, "parent") else None
+
+        # 3. If currently focused widget or any parent has no_bangla_filter, bypass completely
+        focus_w = QApplication.focusWidget()
+        curr_focus: Optional[QObject] = focus_w
+        while curr_focus is not None:
+            if getattr(curr_focus, "property", None) and curr_focus.property("no_bangla_filter"):
+                return False
+            curr_focus = curr_focus.parent() if hasattr(curr_focus, "parent") else None
+
+        # 4. Check watched hierarchy
         curr: Optional[QObject] = watched
         while curr is not None:
             if getattr(curr, "property", None) and curr.property("no_bangla_filter"):
                 return False
             curr = curr.parent() if hasattr(curr, "parent") else None
-
-        if event.type() != QEvent.Type.KeyPress:
-            return super().eventFilter(watched, event)
 
         key_event: QKeyEvent = event
         key = key_event.key()
@@ -461,5 +501,9 @@ class BanglaPhoneticEngine(QObject):
             widget.insert(text)
         elif isinstance(widget, (QTextEdit, QPlainTextEdit)):
             widget.insertPlainText(text)
+        elif widget and hasattr(widget, "parent") and isinstance(widget.parent(), (QTextEdit, QPlainTextEdit)):
+            widget.parent().insertPlainText(text)
+        elif widget and hasattr(widget, "parent") and isinstance(widget.parent(), QLineEdit):
+            widget.parent().insert(text)
         self.text_composed.emit(text)
 

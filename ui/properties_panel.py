@@ -11,12 +11,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDockWidget,
     QDoubleSpinBox,
+    QFontDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -196,6 +197,8 @@ class _TextPropertiesWidget(QWidget):
     color_changed = Signal(str)
     bold_changed = Signal(bool)
     italic_changed = Signal(bool)
+    underline_changed = Signal(bool)
+    strike_changed = Signal(bool)
     opacity_changed = Signal(float)
 
     def __init__(self, i18n: I18n, parent: QWidget | None = None) -> None:
@@ -218,9 +221,20 @@ class _TextPropertiesWidget(QWidget):
         card_layout.addWidget(self._title_label)
 
         # --- 1. Font Family ---
+        font_header = QHBoxLayout()
+        font_header.setContentsMargins(0, 0, 0, 0)
         self._font_label = QLabel(i18n.t("font_family"))
         self._font_label.setObjectName("SectionLabel")
-        card_layout.addWidget(self._font_label)
+        font_header.addWidget(self._font_label)
+        font_header.addStretch()
+
+        self.btn_system_font = QPushButton("🔤 System Font...")
+        self.btn_system_font.setObjectName("SystemFontBtn")
+        self.btn_system_font.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_system_font.setToolTip("Browse and choose from all installed Windows system fonts")
+        self.btn_system_font.clicked.connect(self._choose_system_font)
+        font_header.addWidget(self.btn_system_font)
+        card_layout.addLayout(font_header)
 
         self.font_combo = QComboBox()
         self.font_combo.setEditable(True)
@@ -298,6 +312,30 @@ class _TextPropertiesWidget(QWidget):
         self.italic_btn.toggled.connect(self.italic_changed.emit)
         size_style_row.addWidget(self.italic_btn)
 
+        # Modern toggle button for Underline with vector icon
+        self.underline_btn = QPushButton()
+        self.underline_btn.setObjectName("UnderlineToggleBtn")
+        self.underline_btn.setCheckable(True)
+        self.underline_btn.setFixedSize(34, 34)
+        self.underline_btn.setIcon(get_toggle_icon("underline"))
+        self.underline_btn.setIconSize(QSize(18, 18))
+        self.underline_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.underline_btn.setToolTip(i18n.t("tool_underline"))
+        self.underline_btn.toggled.connect(self.underline_changed.emit)
+        size_style_row.addWidget(self.underline_btn)
+
+        # Modern toggle button for Strike with vector icon
+        self.strike_btn = QPushButton()
+        self.strike_btn.setObjectName("StrikeToggleBtn")
+        self.strike_btn.setCheckable(True)
+        self.strike_btn.setFixedSize(34, 34)
+        self.strike_btn.setIcon(get_toggle_icon("strikethrough"))
+        self.strike_btn.setIconSize(QSize(18, 18))
+        self.strike_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.strike_btn.setToolTip(i18n.t("tool_strikethrough"))
+        self.strike_btn.toggled.connect(self.strike_changed.emit)
+        size_style_row.addWidget(self.strike_btn)
+
         card_layout.addLayout(size_style_row)
 
         # --- 3. Text Colour & Presets ---
@@ -345,6 +383,28 @@ class _TextPropertiesWidget(QWidget):
     def _on_opacity_changed(self, value: int) -> None:
         self._opacity_value_label.setText(f"{value}%")
         self.opacity_changed.emit(value / 100.0)
+
+    def _choose_system_font(self) -> None:
+        """Open system font selection dialog and apply selected font properties."""
+        curr_fam = self.font_combo.currentText()
+        curr_size = self.font_size_spin.value()
+        curr_font = QFont(curr_fam, curr_size)
+        curr_font.setBold(self.bold_btn.isChecked())
+        curr_font.setItalic(self.italic_btn.isChecked())
+        ok, chosen_font = QFontDialog.getFont(curr_font, self, "Select System Font")
+        if ok and chosen_font:
+            family = chosen_font.family()
+            if self.font_combo.findText(family) == -1:
+                self.font_combo.addItem(family)
+            self.font_combo.setCurrentText(family)
+            if chosen_font.pointSize() > 0:
+                self.font_size_spin.setValue(chosen_font.pointSize())
+            self.bold_btn.setChecked(chosen_font.bold())
+            self.italic_btn.setChecked(chosen_font.italic())
+            self.font_changed.emit(family)
+            self.font_size_changed.emit(float(self.font_size_spin.value()))
+            self.bold_changed.emit(chosen_font.bold())
+            self.italic_changed.emit(chosen_font.italic())
 
     def update_translations(self, i18n: I18n) -> None:
         """Refresh labels after language change."""
@@ -448,10 +508,11 @@ class _ShapePropertiesWidget(QWidget):
 
 
 class _AnnotationPropertiesWidget(QWidget):
-    """Colour and opacity for highlight-style annotations."""
+    """Colour, style (highlight/underline/strike), and opacity for annotations."""
 
     color_changed = Signal(str)
     opacity_changed = Signal(float)
+    style_changed = Signal(str)
 
     def __init__(self, i18n: I18n, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -470,6 +531,43 @@ class _AnnotationPropertiesWidget(QWidget):
         self._title_label = QLabel(i18n.t("tool_highlight"))
         self._title_label.setObjectName("CardTitle")
         card_layout.addWidget(self._title_label)
+
+        # Style / Type row: Highlight | Underline | Strike
+        self._style_label = QLabel("Annotation Style:")
+        self._style_label.setObjectName("SectionLabel")
+        card_layout.addWidget(self._style_label)
+
+        style_row = QHBoxLayout()
+        style_row.setSpacing(6)
+        self.btn_style_hl = QPushButton(i18n.t("tool_highlight") if i18n else "Highlight")
+        self.btn_style_hl.setCheckable(True)
+        self.btn_style_hl.setChecked(True)
+        self.btn_style_hl.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_style_ul = QPushButton(i18n.t("tool_underline") if i18n else "Underline")
+        self.btn_style_ul.setCheckable(True)
+        self.btn_style_ul.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.btn_style_st = QPushButton(i18n.t("tool_strikethrough") if i18n else "Strike")
+        self.btn_style_st.setCheckable(True)
+        self.btn_style_st.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        btn_style = (
+            "QPushButton { padding: 4px 8px; border: 1.5px solid #cbd5e1; border-radius: 4px; font-size: 11px; font-weight: 600; background: #ffffff; color: #334155; }"
+            "QPushButton:hover { border-color: #0284c7; }"
+            "QPushButton:checked { background: #0284c7; color: #ffffff; border-color: #0284c7; }"
+        )
+        for b in (self.btn_style_hl, self.btn_style_ul, self.btn_style_st):
+            b.setStyleSheet(btn_style)
+
+        self.btn_style_hl.clicked.connect(lambda: self._set_style("highlight"))
+        self.btn_style_ul.clicked.connect(lambda: self._set_style("underline"))
+        self.btn_style_st.clicked.connect(lambda: self._set_style("strikethrough"))
+
+        style_row.addWidget(self.btn_style_hl)
+        style_row.addWidget(self.btn_style_ul)
+        style_row.addWidget(self.btn_style_st)
+        card_layout.addLayout(style_row)
 
         # Colour
         self._color_label = QLabel(i18n.t("color"))
@@ -517,6 +615,29 @@ class _AnnotationPropertiesWidget(QWidget):
     def _pick_preset(self, col: str) -> None:
         self.color_btn.color = col
         self.color_changed.emit(col)
+
+    def _set_style(self, style_name: str) -> None:
+        self.btn_style_hl.setChecked(style_name == "highlight")
+        self.btn_style_ul.setChecked(style_name == "underline")
+        self.btn_style_st.setChecked(style_name == "strikethrough")
+        if style_name == "highlight":
+            self.opacity_slider.setValue(45)
+            self.color_btn.color = "#ffeb3b"
+            self.color_changed.emit("#ffeb3b")
+        else:
+            self.opacity_slider.setValue(90)
+            self.color_btn.color = "#ef4444"
+            self.color_changed.emit("#ef4444")
+        self.style_changed.emit(style_name)
+
+    def set_annotation_type(self, style_name: str) -> None:
+        self.btn_style_hl.setChecked(style_name == "highlight")
+        self.btn_style_ul.setChecked(style_name == "underline")
+        self.btn_style_st.setChecked(style_name == "strikethrough")
+        if style_name == "highlight":
+            self.opacity_slider.setValue(45)
+        else:
+            self.opacity_slider.setValue(90)
 
     def _on_opacity_changed(self, value: int) -> None:
         self._opacity_value_label.setText(f"{value}%")
@@ -642,6 +763,9 @@ class PropertiesPanel(QDockWidget):
     color_changed = Signal(str)
     bold_changed = Signal(bool)
     italic_changed = Signal(bool)
+    underline_changed = Signal(bool)
+    strike_changed = Signal(bool)
+    annotation_type_changed = Signal(str)
     stroke_color_changed = Signal(str)
     fill_color_changed = Signal(str)
     stroke_width_changed = Signal(float)
@@ -685,6 +809,8 @@ class PropertiesPanel(QDockWidget):
         self._text_panel.color_changed.connect(self.color_changed.emit)
         self._text_panel.bold_changed.connect(self.bold_changed.emit)
         self._text_panel.italic_changed.connect(self.italic_changed.emit)
+        self._text_panel.underline_changed.connect(self.underline_changed.emit)
+        self._text_panel.strike_changed.connect(self.strike_changed.emit)
         self._text_panel.opacity_changed.connect(self.opacity_changed.emit)
 
         self._shape_panel.stroke_color_changed.connect(self.stroke_color_changed.emit)
@@ -694,6 +820,7 @@ class PropertiesPanel(QDockWidget):
 
         self._annotation_panel.color_changed.connect(self.color_changed.emit)
         self._annotation_panel.opacity_changed.connect(self.opacity_changed.emit)
+        self._annotation_panel.style_changed.connect(self.annotation_type_changed.emit)
 
         self._image_panel.opacity_changed.connect(self.opacity_changed.emit)
 
@@ -713,9 +840,13 @@ class PropertiesPanel(QDockWidget):
         self._text_panel.font_size_spin.blockSignals(True)
         self._text_panel.bold_btn.blockSignals(True)
         self._text_panel.italic_btn.blockSignals(True)
+        self._text_panel.underline_btn.blockSignals(True)
+        self._text_panel.strike_btn.blockSignals(True)
         self._text_panel.opacity_slider.blockSignals(True)
 
         if hasattr(data, "font_family") and data.font_family:
+            if self._text_panel.font_combo.findText(data.font_family) == -1:
+                self._text_panel.font_combo.addItem(data.font_family)
             self._text_panel.font_combo.setCurrentText(data.font_family)
         if hasattr(data, "font_size") and data.font_size:
             self._text_panel.font_size_spin.setValue(int(data.font_size))
@@ -726,6 +857,10 @@ class PropertiesPanel(QDockWidget):
             self._text_panel.bold_btn.setChecked(bool(data.bold))
         if hasattr(data, "italic"):
             self._text_panel.italic_btn.setChecked(bool(data.italic))
+        if hasattr(data, "underline"):
+            self._text_panel.underline_btn.setChecked(bool(data.underline))
+        if hasattr(data, "strikethrough"):
+            self._text_panel.strike_btn.setChecked(bool(data.strikethrough))
         if hasattr(data, "opacity") and data.opacity is not None:
             self._text_panel.opacity_slider.setValue(int(data.opacity * 100))
 
@@ -733,6 +868,8 @@ class PropertiesPanel(QDockWidget):
         self._text_panel.font_size_spin.blockSignals(False)
         self._text_panel.bold_btn.blockSignals(False)
         self._text_panel.italic_btn.blockSignals(False)
+        self._text_panel.underline_btn.blockSignals(False)
+        self._text_panel.strike_btn.blockSignals(False)
         self._text_panel.opacity_slider.blockSignals(False)
 
     def show_shape_properties(self, data) -> None:
@@ -748,10 +885,18 @@ class PropertiesPanel(QDockWidget):
     def show_annotation_properties(self, data) -> None:
         """Switch to annotation properties and populate controls."""
         self._stack.setCurrentIndex(_IDX_ANNOTATION)
+        if hasattr(data, "annotation_type") and data.annotation_type:
+            self._annotation_panel.set_annotation_type(data.annotation_type)
         if hasattr(data, "color") and data.color:
             self._annotation_panel.color_btn.color = data.color
         if hasattr(data, "opacity") and data.opacity:
             self._annotation_panel.opacity_slider.setValue(int(data.opacity * 100))
+
+    def show_image_properties(self, data) -> None:
+        """Switch to image properties and populate controls."""
+        self._stack.setCurrentIndex(_IDX_IMAGE)
+        if hasattr(data, "opacity") and data.opacity is not None:
+            self._image_panel.opacity_slider.setValue(int(data.opacity * 100))
 
     def show_empty(self) -> None:
         """Switch to empty view when nothing is selected."""
@@ -772,17 +917,35 @@ class PropertiesPanel(QDockWidget):
             ToolEnum.ARROW: _IDX_SHAPE,
             ToolEnum.FREEHAND: _IDX_SHAPE,
             ToolEnum.IMAGE: _IDX_IMAGE,
-            ToolEnum.SIGNATURE: _IDX_SHAPE,
+            ToolEnum.SIGNATURE: _IDX_IMAGE,
         }
         idx = mapping.get(tool, _IDX_EMPTY)
         self._stack.setCurrentIndex(idx)
 
     def set_font_families(self, families: list[str]) -> None:
-        """Populate the font family dropdown."""
+        """Populate the font family dropdown with bundled fonts and installed system fonts."""
         combo = self._text_panel.font_combo
         combo.blockSignals(True)
+        current = combo.currentText()
         combo.clear()
-        combo.addItems(families)
+
+        # Add bundled fonts first
+        all_families = list(families)
+
+        # Append system fonts from QFontDatabase without duplicates
+        try:
+            sys_families = sorted(QFontDatabase.families())
+            for sf in sys_families:
+                if sf not in all_families and not sf.startswith("@"):
+                    all_families.append(sf)
+        except Exception:
+            pass
+
+        combo.addItems(all_families)
+        if current and current in all_families:
+            combo.setCurrentText(current)
+        elif families:
+            combo.setCurrentText(families[0])
         combo.blockSignals(False)
 
     def get_text_properties(self) -> dict:
@@ -793,6 +956,8 @@ class PropertiesPanel(QDockWidget):
             "color": self._text_panel.color_btn.color,
             "bold": self._text_panel.bold_btn.isChecked(),
             "italic": self._text_panel.italic_btn.isChecked(),
+            "underline": self._text_panel.underline_btn.isChecked(),
+            "strikethrough": self._text_panel.strike_btn.isChecked(),
         }
 
     def get_shape_properties(self) -> dict:
@@ -806,9 +971,15 @@ class PropertiesPanel(QDockWidget):
 
     def get_annotation_properties(self) -> dict:
         """Return current annotation properties as a dict."""
+        style = "highlight"
+        if self._annotation_panel.btn_style_ul.isChecked():
+            style = "underline"
+        elif self._annotation_panel.btn_style_st.isChecked():
+            style = "strikethrough"
         return {
             "color": self._annotation_panel.color_btn.color,
             "opacity": self._annotation_panel.opacity_slider.value() / 100.0,
+            "annotation_type": style,
         }
 
     def update_translations(self, i18n: I18n) -> None:

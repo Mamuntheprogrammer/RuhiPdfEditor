@@ -95,7 +95,7 @@ class TestBanglaPdfRendering(unittest.TestCase):
     
     def test_create_bangla_pdf(self):
         """Create a test PDF with Bangla text and verify it's valid."""
-        import fitz
+        import pymupdf as fitz
         from core.text_renderer import TextRenderer
         
         renderer = TextRenderer()
@@ -132,7 +132,7 @@ class TestBanglaPdfRendering(unittest.TestCase):
     
     def test_mixed_bangla_english(self):
         """Test PDF with mixed Bangla and English text."""
-        import fitz
+        import pymupdf as fitz
         from core.text_renderer import TextRenderer
         
         renderer = TextRenderer()

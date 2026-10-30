@@ -61,7 +61,7 @@ class TestPageTools(unittest.TestCase):
     """Test page manipulation tools."""
     
     def setUp(self):
-        import fitz
+        import pymupdf as fitz
         self.doc = fitz.open()
         for i in range(5):
             self.doc.new_page()
@@ -79,7 +79,7 @@ class TestPageTools(unittest.TestCase):
         self.assertEqual(self.doc[0].rotation, 90)
     
     def test_merge_pdfs(self):
-        import fitz
+        import pymupdf as fitz
         from core.page_tools import PageTools
         
         # Create two test PDFs
@@ -105,7 +105,7 @@ class TestPageTools(unittest.TestCase):
         merged.close()
     
     def test_split_pdf(self):
-        import fitz
+        import pymupdf as fitz
         from core.page_tools import PageTools
         
         output_dir = str(self.test_dir / "split_output")

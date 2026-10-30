@@ -9,10 +9,12 @@ subclasses that integrate with the :class:`UndoStack`.
 from __future__ import annotations
 
 import logging
+import sys
 import tempfile
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
+sys.modules.setdefault("fitz", fitz)
 
 from core.undo_redo import Command
 
